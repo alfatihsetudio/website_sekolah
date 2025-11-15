@@ -1,0 +1,5 @@
+# Prevent direct access to uploads folder
+# Files should be accessed through download.php only
+Order Deny,Allow
+Deny from all
+

@@ -1,0 +1,32 @@
+# Web Pembelajaran - .htaccess Configuration
+
+# Enable Rewrite Engine
+RewriteEngine On
+
+# Prevent directory listing
+Options -Indexes
+
+# Protect uploads folder (direct access blocked)
+<FilesMatch "\.(pdf|doc|docx|jpg|jpeg|png|zip)$">
+    <If "%{REQUEST_URI} =~ m#^/web_MG/uploads/#">
+        Require all denied
+    </If>
+</FilesMatch>
+
+# PHP Settings
+php_value upload_max_filesize 10M
+php_value post_max_size 10M
+php_value max_execution_time 300
+php_value max_input_time 300
+
+# Security Headers
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set X-XSS-Protection "1; mode=block"
+</IfModule>
+
+# Error Pages (optional)
+ErrorDocument 404 /web_MG/404.php
+ErrorDocument 500 /web_MG/500.php
+
