@@ -19,3 +19,10 @@
 [2025-11-18 12:24:19] ATTEMPT: send_password_email_smtp to=alfatih.ahmad.annn@gmail.com name=fatih2
 [2025-11-18 12:24:24] SENT: to=alfatih.ahmad.annn@gmail.com ok
 [2025-11-18 12:24:24] SENT: user_id=23 email=alfatih.ahmad.annn@gmail.com
+[2025-11-18 14:03:14] ATTEMPT: send_password_email_smtp to=alfatih.ahmad.annn@gmail.com name=Administrator
+[2025-11-18 14:03:20] SENT: to=alfatih.ahmad.annn@gmail.com ok
+[2025-11-18 14:10:21] ATTEMPT: send_password_email_smtp to=alfatih.ahmad.annn@gmail.com name=Administrator
+[2025-11-18 14:10:26] SENT: to=alfatih.ahmad.annn@gmail.com ok
+[2025-11-18 21:43:24] ATTEMPT: send_password_email_smtp to=alfatih.sayuti.com@gmail.com name=Al-Fatih Ahmad An-Nizsamy
+[2025-11-18 21:43:29] SENT: to=alfatih.sayuti.com@gmail.com ok
+[2025-11-18 21:43:29] SENT: user_id=25 email=alfatih.sayuti.com@gmail.com

@@ -3,25 +3,39 @@
  * Halaman Login (Guru & Murid)
  * Method: GET (tampilkan form) / POST (proses login)
  */
-// Pastikan semua file yang diperlukan sudah di-include
 require_once __DIR__ . '/../inc/config.php';
 require_once __DIR__ . '/../inc/db.php';
 require_once __DIR__ . '/../inc/auth.php';
 require_once __DIR__ . '/../inc/helpers.php';
 
+$baseUrl = rtrim(BASE_URL, '/\\');
+
 // Jika sudah login, redirect ke dashboard (kecuali dipaksa via ?force=1)
 $force = isset($_GET['force']) && $_GET['force'] === '1';
 if (isLoggedIn() && !$force) {
-    // Jika admin mencoba login di sini, redirect ke admin login
+    // Jika admin mencoba login di sini, arahkan ke halaman login / dashboard admin
     if (isAdmin()) {
-        header('Location: /web_MG/admin_login.php');
+        header('Location: ' . $baseUrl . '/dashboard/admin.php');
         exit;
     }
-    redirectByRole();
+
+    // Guru / Murid langsung ke dashboard masing-masing
+    $currentRole = getUserRole();
+    if ($currentRole === 'guru') {
+        header('Location: ' . $baseUrl . '/dashboard/guru.php');
+        exit;
+    } elseif ($currentRole === 'murid' || $currentRole === 'siswa') {
+        header('Location: ' . $baseUrl . '/dashboard/murid.php');
+        exit;
+    } else {
+        // fallback
+        header('Location: ' . $baseUrl . '/index.php');
+        exit;
+    }
 }
 
 // Get role dari URL parameter
-$roleFilter = $_GET['role'] ?? '';
+$roleFilter   = $_GET['role'] ?? '';
 $allowedRoles = ['guru', 'siswa']; // gunakan 'siswa' bukan 'murid'
 
 $error = '';
@@ -32,7 +46,7 @@ function roleMatches($userRole, $requestedRole) {
     if ($userRole === $requestedRole) return true;
     $aliases = [
         'siswa' => 'murid',
-        'murid' => 'siswa'
+        'murid' => 'siswa',
     ];
     return (isset($aliases[$requestedRole]) && $aliases[$requestedRole] === $userRole)
         || (isset($aliases[$userRole]) && $aliases[$userRole] === $requestedRole);
@@ -40,12 +54,12 @@ function roleMatches($userRole, $requestedRole) {
 
 // Proses login
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email = trim($_POST['email'] ?? '');
-    $password = $_POST['password'] ?? '';
+    $email         = trim($_POST['email'] ?? '');
+    $password      = $_POST['password'] ?? '';
     $requestedRole = $_POST['role'] ?? '';
-    
+
     // Validasi
-    if (empty($email) || empty($password)) {
+    if ($email === '' || $password === '') {
         $error = 'Email dan password harus diisi';
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $error = 'Format email tidak valid';
@@ -53,18 +67,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Coba login
         if (loginUser($email, $password)) {
             $userRole = getUserRole();
-            
-            // Cek jika user adalah admin, redirect ke admin login
+
+            // Kalau admin, jangan lewat sini
             if ($userRole === 'admin') {
                 logoutUser();
-                $error = 'Admin harus login melalui halaman admin. <a href="/web_MG/admin_login.php">Klik di sini</a>';
-            } 
-            // Cek jika role sesuai dengan yang diminta (terima alias 'murid'/'siswa')
+                $error = 'Admin harus login melalui halaman admin.';
+            }
+            // Cek role sesuai (terima alias murid/siswa)
             elseif (!roleMatches($userRole, $requestedRole)) {
                 logoutUser();
                 $error = "Akun ini bukan untuk role '{$requestedRole}'. Silakan login dengan akun yang sesuai.";
             } else {
-                redirectByRole();
+                // Redirect ke dashboard sesuai role
+                if ($userRole === 'guru') {
+                    header('Location: ' . $baseUrl . '/dashboard/guru.php');
+                    exit;
+                } elseif ($userRole === 'murid' || $userRole === 'siswa') {
+                    header('Location: ' . $baseUrl . '/dashboard/murid.php');
+                    exit;
+                } else {
+                    // fallback
+                    header('Location: ' . $baseUrl . '/index.php');
+                    exit;
+                }
             }
         } else {
             $error = 'Email atau password salah';
@@ -79,7 +104,9 @@ if (empty($roleFilter) && isset($_POST['role'])) {
     $roleFilter = $_GET['role'];
 }
 
-$pageTitle = $roleFilter === 'guru' ? 'Login Guru' : ($roleFilter === 'siswa' ? 'Login Murid' : 'Login');
+$pageTitle = $roleFilter === 'guru'
+    ? 'Login Guru'
+    : ($roleFilter === 'siswa' ? 'Login Murid' : 'Login');
 ?>
 <!doctype html>
 <html lang="id">
@@ -87,7 +114,7 @@ $pageTitle = $roleFilter === 'guru' ? 'Login Guru' : ($roleFilter === 'siswa' ? 
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title><?php echo sanitize($pageTitle) . ' - ' . sanitize(APP_NAME); ?></title>
-    <link rel="stylesheet" href="<?php echo BASE_URL; ?>/assets/style.css">
+    <link rel="stylesheet" href="<?php echo $baseUrl; ?>/assets/style.css">
 </head>
 <body>
     <div class="auth-container">
@@ -98,7 +125,7 @@ $pageTitle = $roleFilter === 'guru' ? 'Login Guru' : ($roleFilter === 'siswa' ? 
                 <?php elseif ($roleFilter === 'siswa'): ?>
                     🎓 Login Murid
                 <?php else: ?>
-                    <?php echo APP_NAME; ?>
+                    <?php echo sanitize(APP_NAME); ?>
                 <?php endif; ?>
             </h1>
             <p class="auth-subtitle">
@@ -155,14 +182,24 @@ $pageTitle = $roleFilter === 'guru' ? 'Login Guru' : ($roleFilter === 'siswa' ? 
             </form>
 
             <div class="auth-footer">
-                <p><a href="<?php echo BASE_URL; ?>/home.php" style="color: var(--primary);">← Kembali ke Home</a></p>
+                <p>
+                    <a href="<?php echo $baseUrl; ?>/home.php" style="color: var(--primary);">
+                        ← Kembali ke Home
+                    </a>
+                </p>
                 <?php if ($roleFilter === 'guru'): ?>
                     <p style="margin-top: 10px; font-size: 0.9rem; color: var(--muted);">
-                        Bukan guru? <a href="<?php echo BASE_URL; ?>/auth/login.php?role=siswa" style="color: var(--primary);">Login sebagai Murid</a>
+                        Bukan guru?
+                        <a href="<?php echo $baseUrl; ?>/auth/login.php?role=siswa" style="color: var(--primary);">
+                            Login sebagai Murid
+                        </a>
                     </p>
                 <?php elseif ($roleFilter === 'siswa'): ?>
                     <p style="margin-top: 10px; font-size: 0.9rem; color: var(--muted);">
-                        Bukan murid? <a href="<?php echo BASE_URL; ?>/auth/login.php?role=guru" style="color: var(--primary);">Login sebagai Guru</a>
+                        Bukan murid?
+                        <a href="<?php echo $baseUrl; ?>/auth/login.php?role=guru" style="color: var(--primary);">
+                            Login sebagai Guru
+                        </a>
                     </p>
                 <?php else: ?>
                     <p style="margin-top: 10px; font-size: 0.9rem; color: var(--muted);">
@@ -174,4 +211,3 @@ $pageTitle = $roleFilter === 'guru' ? 'Login Guru' : ($roleFilter === 'siswa' ? 
     </div>
 </body>
 </html>
-

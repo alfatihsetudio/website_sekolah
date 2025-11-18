@@ -1,14 +1,25 @@
 <?php
 require_once __DIR__ . '/../inc/auth.php';
 require_once __DIR__ . '/../inc/db.php';
-requireRole(['guru','siswa','admin']);
-$id = (int)($_GET['id'] ?? 0);
-if ($id > 0) {
-    $db = getDB();
+
+requireLogin();
+
+$db      = getDB();
+$baseUrl = rtrim(BASE_URL, '/\\');
+$userId  = (int)($_SESSION['user_id'] ?? 0);
+
+$notifId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+
+if ($notifId > 0) {
+    // Pastikan notifikasi memang milik user yang sedang login
     $stmt = $db->prepare("UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?");
-    $stmt->bind_param("ii", $id, $_SESSION['user_id']);
-    $stmt->execute();
-    $stmt->close();
+    if ($stmt) {
+        $stmt->bind_param("ii", $notifId, $userId);
+        $stmt->execute();
+        $stmt->close();
+    }
 }
-header('Location: ' . BASE_URL . '/notifications/list.php');
+
+// Balik lagi ke list notifikasi
+header('Location: ' . $baseUrl . '/notifications/list.php');
 exit;

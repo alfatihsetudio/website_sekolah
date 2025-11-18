@@ -1,22 +1,28 @@
 <?php
 /**
  * Authentication & Authorization Helper (Hardened)
- * - Compatibility: menggunakan getDB() yang sudah ada di inc/db.php (mysqli)
- * - Menambahkan: session fingerprint, inactivity timeout, CSRF helpers, safer redirects
+ * - Menggunakan getDB() dari inc/db.php (mysqli)
+ * - Fitur: session fingerprint, inactivity timeout, CSRF helpers, safer redirects
+ * - Multi-sekolah: menyimpan school_id di session
  */
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/helpers.php';
-if (session_status() === PHP_SESSION_NONE) session_start();
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 // Default session timeout (seconds) - 30 minutes
 if (!defined('SESSION_TIMEOUT')) {
     define('SESSION_TIMEOUT', 30 * 60);
 }
 
-/** -----------------------------
- * SESSION / SECURITY HELPERS
- * -----------------------------*/
+/*
+|--------------------------------------------------------------------------
+| SESSION / SECURITY HELPERS
+|--------------------------------------------------------------------------
+*/
 
 /**
  * Buat fingerprint sederhana untuk cek session hijack
@@ -28,16 +34,16 @@ function _session_fingerprint() {
 }
 
 /**
- * Inisialisasi session after login
+ * Inisialisasi security session setelah login sukses
  */
 function _init_session_security() {
     $_SESSION['last_activity'] = time();
-    $_SESSION['fingerprint'] = _session_fingerprint();
-    // Regenerate ID sudah dipanggil saat loginUser
+    $_SESSION['fingerprint']   = _session_fingerprint();
+    // session_regenerate_id(true) sudah dipanggil dalam loginUser
 }
 
 /**
- * Cek session alive & fingerprint
+ * Cek apakah session masih valid (timeout + fingerprint)
  */
 function _is_session_valid() {
     if (!isset($_SESSION['last_activity'])) return false;
@@ -48,7 +54,7 @@ function _is_session_valid() {
 }
 
 /**
- * Update last activity timestamp (panggil di setiap halaman yang aktif)
+ * Update last activity timestamp (panggil di setiap halaman yg butuh auth)
  */
 function touchSession() {
     if (isset($_SESSION['last_activity'])) {
@@ -56,12 +62,15 @@ function touchSession() {
     }
 }
 
-/** -----------------------------
- * AUTH STATUS HELPERS
- * -----------------------------*/
+/*
+|--------------------------------------------------------------------------
+| AUTH STATUS HELPERS
+|--------------------------------------------------------------------------
+*/
 
 function isLoggedIn() {
-    return !empty($_SESSION['user_id']);
+    // user_id harus ada dan session masih valid
+    return !empty($_SESSION['user_id']) && _is_session_valid();
 }
 
 function getUserRole() {
@@ -76,30 +85,35 @@ function isGuru() {
     return getUserRole() === 'guru';
 }
 
+/**
+ * Beberapa bagian aplikasi kadang pakai 'murid', kadang 'siswa'
+ */
 function isMurid() {
-    return getUserRole() === 'murid';
+    $role = getUserRole();
+    return $role === 'murid' || $role === 'siswa';
 }
 
-/** -----------------------------
- * REDIRECT HELPERS
- * -----------------------------*/
+/*
+|--------------------------------------------------------------------------
+| REDIRECT HELPERS
+|--------------------------------------------------------------------------
+*/
 
 function safeRedirect($path) {
-    // gunakan relative path agar portable; jika BASE_URL ada, bisa gunakan itu
     header('Location: ' . $path);
     exit;
 }
 
 /**
- * Require login - redirect ke login jika belum login
- * Jika sudah login tapi session expired, logout otomatis dan redirect ke login
+ * Require login - redirect ke login jika belum login / session invalid
  */
 function requireLogin() {
+    $base = defined('BASE_URL') ? rtrim(BASE_URL, '/\\') : '';
+
     if (!isLoggedIn()) {
-        // pastikan session bersih jika expired
+        // pastikan session bersih jika expired / tidak valid
         logoutUser();
-        // relative path (sesuaikan jika perlu)
-        safeRedirect('/web_MG/auth/login.php');
+        safeRedirect($base . '/auth/login.php');
     } else {
         // update last activity
         touchSession();
@@ -108,12 +122,13 @@ function requireLogin() {
 
 /**
  * Require role tertentu
- * Jika tidak sesuai -> kirim 403 Forbidden (akses ditolak)
+ * Jika tidak sesuai -> kirim 403 Forbidden
  */
 function requireRole($roles) {
     if (!isLoggedIn()) {
-        requireLogin();
+        requireLogin(); // ini akan redirect & exit
     }
+
     $role = $_SESSION['role'] ?? '';
     if (!in_array($role, $roles, true)) {
         http_response_code(403);
@@ -125,12 +140,15 @@ function requireRole($roles) {
     touchSession();
 }
 
-/** -----------------------------
- * LOGIN / LOGOUT
- * -----------------------------*/
+/*
+|--------------------------------------------------------------------------
+| LOGIN / LOGOUT
+|--------------------------------------------------------------------------
+*/
 
 /**
  * Login user
+ * - Mengisi: user_id, email, nama, role, school_id di session
  * @return bool
  */
 function loginUser($email, $password) {
@@ -140,11 +158,12 @@ function loginUser($email, $password) {
 
     $db = getDB();
 
-    $sql = "SELECT id, email, password, nama, role FROM users WHERE email = ?";
+    $sql  = "SELECT id, email, password, nama, role, school_id FROM users WHERE email = ? LIMIT 1";
     $stmt = $db->prepare($sql);
     if (!$stmt) {
         return false;
     }
+
     $stmt->bind_param("s", $email);
     $stmt->execute();
     $result = $stmt->get_result();
@@ -156,10 +175,12 @@ function loginUser($email, $password) {
             // sukses login
             session_regenerate_id(true);
 
-            $_SESSION['user_id'] = (int)$user['id'];
-            $_SESSION['email'] = $user['email'];
-            $_SESSION['nama'] = $user['nama'];
-            $_SESSION['role'] = $user['role'];
+            $_SESSION['user_id']   = (int)$user['id'];
+            $_SESSION['email']     = $user['email'];
+            $_SESSION['nama']      = $user['nama'];
+            $_SESSION['role']      = $user['role'];
+            // PENTING: multi-sekolah
+            $_SESSION['school_id'] = isset($user['school_id']) ? (int)$user['school_id'] : 0;
 
             _init_session_security();
 
@@ -178,11 +199,16 @@ function logoutUser() {
     $_SESSION = [];
 
     // hapus cookie session
-    if (ini_get("session.use_cookies")) {
+    if (ini_get('session.use_cookies')) {
         $params = session_get_cookie_params();
-        setcookie(session_name(), '', time() - 42000,
-            $params["path"], $params["domain"],
-            $params["secure"], $params["httponly"]
+        setcookie(
+            session_name(),
+            '',
+            time() - 42000,
+            $params['path'],
+            $params['domain'],
+            $params['secure'],
+            $params['httponly']
         );
     }
 
@@ -194,23 +220,26 @@ function logoutUser() {
     session_regenerate_id(true);
 }
 
-/** -----------------------------
- * USER INFO
- * -----------------------------*/
+/*
+|--------------------------------------------------------------------------
+| USER INFO
+|--------------------------------------------------------------------------
+*/
 
 /**
- * Get current user data (from DB)
+ * Ambil data user saat ini dari DB
  * @return array|null
  */
 function getCurrentUser() {
     if (!isLoggedIn()) return null;
 
-    $db = getDB();
-    $user_id = (int)$_SESSION['user_id'];
+    $db      = getDB();
+    $user_id = (int)($_SESSION['user_id'] ?? 0);
 
-    $sql = "SELECT id, email, nama, role FROM users WHERE id = ?";
+    $sql  = "SELECT id, email, nama, role, school_id FROM users WHERE id = ? LIMIT 1";
     $stmt = $db->prepare($sql);
     if (!$stmt) return null;
+
     $stmt->bind_param("i", $user_id);
     $stmt->execute();
     $result = $stmt->get_result();
@@ -223,14 +252,36 @@ function getCurrentUser() {
 }
 
 /**
+ * Ambil school_id dari session (0 jika tidak ada)
+ */
+function getCurrentSchoolId(): int {
+    return isset($_SESSION['school_id']) ? (int)$_SESSION['school_id'] : 0;
+}
+
+/*
+|--------------------------------------------------------------------------
+| REDIRECT BERDASARKAN ROLE
+|--------------------------------------------------------------------------
+*/
+
+/**
  * Redirect berdasarkan role (panggil setelah login sukses)
  */
 function redirectByRole($role = null) {
     if ($role === null) {
         $role = $_SESSION['role'] ?? '';
     }
-    if ($role === 'guru') header('Location: ' . BASE_URL . '/guru.php');
-    elseif ($role === 'siswa') header('Location: ' . BASE_URL . '/murid.php');
-    else header('Location: ' . BASE_URL . '/index.php');
+
+    $base = defined('BASE_URL') ? rtrim(BASE_URL, '/\\') : '';
+
+    if ($role === 'guru') {
+        header('Location: ' . $base . '/guru.php');
+    } elseif ($role === 'murid' || $role === 'siswa') {
+        header('Location: ' . $base . '/murid.php');
+    } elseif ($role === 'admin') {
+        header('Location: ' . $base . '/dashboard/admin.php');
+    } else {
+        header('Location: ' . $base . '/index.php');
+    }
     exit;
 }
