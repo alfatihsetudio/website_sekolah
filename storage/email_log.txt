@@ -1,0 +1,21 @@
+[2025-11-16 19:11:13] FAILED: user_id=17 email=alfatih.sayuti.com@gmail.com reason=
+[2025-11-16 13:19:03] ATTEMPT: send_password_email_smtp to=email_tujuan_kamu@gmail.com name=Nama Tes
+[2025-11-16 13:19:05] FAILED: to=email_tujuan_kamu@gmail.com reason=PHPMailer Exception: SMTP Error: Could not authenticate. PHPMailerError=SMTP Error: Could not authenticate.
+[2025-11-16 20:42:19] ATTEMPT: send_password_email_smtp to=alfatih.sayuti.com@gmail.com name=Al-Fatih Ahmad An-Nizsamy
+[2025-11-16 20:42:24] SENT: to=alfatih.sayuti.com@gmail.com ok
+[2025-11-16 20:42:24] SENT: user_id=18 email=alfatih.sayuti.com@gmail.com
+[2025-11-17 08:35:20] ATTEMPT: send_password_email_smtp to=rahmatasik91@gmail.com name=ahmad muntaqim
+[2025-11-17 08:35:26] SENT: to=rahmatasik91@gmail.com ok
+[2025-11-17 08:35:26] SENT: user_id=19 email=rahmatasik91@gmail.com
+[2025-11-17 08:37:46] ATTEMPT: send_password_email_smtp to=rahmadasik91@gmail.com name=ahmad muntaqim
+[2025-11-17 08:37:51] SENT: to=rahmadasik91@gmail.com ok
+[2025-11-17 08:37:51] SENT: user_id=20 email=rahmadasik91@gmail.com
+[2025-11-17 20:50:16] ATTEMPT: send_password_email_smtp to=alfatih.sayuti.com@gmail.com name=Al-Fatih Ahmad An-Nizsamy
+[2025-11-17 20:50:21] SENT: to=alfatih.sayuti.com@gmail.com ok
+[2025-11-17 20:50:21] SENT: user_id=21 email=alfatih.sayuti.com@gmail.com
+[2025-11-17 20:57:19] ATTEMPT: send_password_email_smtp to=alfatih.sayuti.com@gmail.com name=Al-Fatih Ahmad An-Nizsamy
+[2025-11-17 20:57:24] SENT: to=alfatih.sayuti.com@gmail.com ok
+[2025-11-17 20:57:24] SENT: user_id=22 email=alfatih.sayuti.com@gmail.com
+[2025-11-18 12:24:19] ATTEMPT: send_password_email_smtp to=alfatih.ahmad.annn@gmail.com name=fatih2
+[2025-11-18 12:24:24] SENT: to=alfatih.ahmad.annn@gmail.com ok
+[2025-11-18 12:24:24] SENT: user_id=23 email=alfatih.ahmad.annn@gmail.com

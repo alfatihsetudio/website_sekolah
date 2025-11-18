@@ -1,32 +1,24 @@
-# Web Pembelajaran - .htaccess Configuration
-
-# Enable Rewrite Engine
+# web_MG/.htaccess - minimal & safe
 RewriteEngine On
+RewriteBase /web_MG/
 
-# Prevent directory listing
+# Direct requests to uploads/materials/* go to serve_file.php
+# Put this rule FIRST so it runs before any deny rules
+RewriteRule ^uploads/materials/(.*)$ /web_MG/serve_file.php?f=materials/$1 [L,QSA]
+
+# Disable directory listing
 Options -Indexes
 
-# Protect uploads folder (direct access blocked)
-<FilesMatch "\.(pdf|doc|docx|jpg|jpeg|png|zip)$">
-    <If "%{REQUEST_URI} =~ m#^/web_MG/uploads/#">
+# Block execution of scripts in uploads folder
+<If "%{REQUEST_URI} =~ m#^/web_MG/uploads/#">
+    <FilesMatch "\.(php|phps|phtml|pl|py|jsp|asp|sh)$">
         Require all denied
-    </If>
-</FilesMatch>
+    </FilesMatch>
+</If>
 
-# PHP Settings
-php_value upload_max_filesize 10M
-php_value post_max_size 10M
-php_value max_execution_time 300
-php_value max_input_time 300
-
-# Security Headers
+# Security headers
 <IfModule mod_headers.c>
-    Header set X-Content-Type-Options "nosniff"
-    Header set X-Frame-Options "SAMEORIGIN"
-    Header set X-XSS-Protection "1; mode=block"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set X-XSS-Protection "1; mode=block"
 </IfModule>
-
-# Error Pages (optional)
-ErrorDocument 404 /web_MG/404.php
-ErrorDocument 500 /web_MG/500.php
-

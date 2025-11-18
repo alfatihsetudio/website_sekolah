@@ -12,31 +12,95 @@ $role = $_SESSION['role'] ?? 'siswa';
 
 $subjects = [];
 
-// Guru: tampilkan mapel yang dia ampuh
+/**
+ * Helper: ambil display nama kelas (prefer nama_kelas, fallback ke class_level + jurusan)
+ */
+function kelas_display($row) {
+    if (!empty($row['nama_kelas'])) {
+        return $row['nama_kelas'];
+    }
+    $lv = trim($row['class_level'] ?? '');
+    $jr = trim($row['jurusan'] ?? '');
+    $comb = trim(($lv ? $lv . ' ' : '') . $jr);
+    return $comb ?: '-';
+}
+
+/* ===========================
+   Branch: guru
+   =========================== */
 if ($role === 'guru') {
-    $stmt = $db->prepare("SELECT s.id, s.nama_mapel, c.nama_kelas, s.deskripsi FROM subjects s JOIN classes c ON s.class_id = c.id WHERE s.guru_id = ? ORDER BY c.nama_kelas, s.nama_mapel");
-    $stmt->bind_param("i", $userId);
-    $stmt->execute();
-    $res = $stmt->get_result();
-    $subjects = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
-    $stmt->close();
-} else {
-    // Siswa atau lainnya: mapel untuk kelas yang dia ikuti
-    $stmt = $db->prepare("
-        SELECT DISTINCT s.id, s.nama_mapel, c.nama_kelas, s.deskripsi, u.name AS guru_name
+    $sql = "
+        SELECT s.id, s.nama_mapel, c.nama_kelas, s.class_level, s.jurusan
         FROM subjects s
-        JOIN classes c ON s.class_id = c.id
+        LEFT JOIN classes c ON s.class_id = c.id
+        WHERE s.guru_id = ?
+        ORDER BY COALESCE(c.nama_kelas, CONCAT(s.class_level, ' ', s.jurusan)), s.nama_mapel
+    ";
+    $stmt = $db->prepare($sql);
+    if ($stmt) {
+        $stmt->bind_param("i", $userId);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $subjects = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
+        $stmt->close();
+    } else {
+        // jika prepare gagal, tetap kosong tapi beri pesan di UI nanti
+        $subjects = [];
+        $errorFetch = 'Gagal mengambil data mata pelajaran (guru).';
+    }
+} else {
+    /* ===========================
+       Branch: siswa / lainnya
+       Coba query terhadap table class_user, kalau gagal coba class_members (fallback)
+       =========================== */
+    $queriesToTry = [
+        // seperti file awal user: class_user
+        "
+        SELECT DISTINCT s.id, s.nama_mapel, c.nama_kelas, s.class_level, s.jurusan, u.name AS guru_name
+        FROM subjects s
+        LEFT JOIN classes c ON s.class_id = c.id
         JOIN class_user cu ON cu.class_id = c.id
         LEFT JOIN users u ON u.id = s.guru_id
         WHERE cu.user_id = ?
-        ORDER BY c.nama_kelas, s.nama_mapel
-    ");
-    $stmt->bind_param("i", $userId);
-    $stmt->execute();
-    $res = $stmt->get_result();
-    $subjects = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
-    $stmt->close();
+        ORDER BY COALESCE(c.nama_kelas, CONCAT(s.class_level, ' ', s.jurusan)), s.nama_mapel
+        ",
+        // fallback: class_members (nama tabel alternatif)
+        "
+        SELECT DISTINCT s.id, s.nama_mapel, c.nama_kelas, s.class_level, s.jurusan, u.name AS guru_name
+        FROM subjects s
+        LEFT JOIN classes c ON s.class_id = c.id
+        JOIN class_members cu ON cu.class_id = c.id
+        LEFT JOIN users u ON u.id = s.guru_id
+        WHERE cu.user_id = ?
+        ORDER BY COALESCE(c.nama_kelas, CONCAT(s.class_level, ' ', s.jurusan)), s.nama_mapel
+        "
+    ];
+
+    $subjects = [];
+    $errorFetch = '';
+    foreach ($queriesToTry as $q) {
+        $stmt = $db->prepare($q);
+        if (!$stmt) {
+            // prepare gagal (mis. tabel tidak ada), coba query berikutnya
+            continue;
+        }
+        $stmt->bind_param("i", $userId);
+        if (!$stmt->execute()) {
+            $stmt->close();
+            continue;
+        }
+        $res = $stmt->get_result();
+        $subjects = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
+        $stmt->close();
+        // jika berhasil dan data (atau kosong) diperoleh, hentikan loop
+        break;
+    }
+
+    if ($stmt === false) {
+        $errorFetch = 'Gagal mengambil data mata pelajaran (siswa). Pastikan tabel relasi kelas-siswa ada.';
+    }
 }
+
 ?>
 
 <div class="container">
@@ -46,6 +110,10 @@ if ($role === 'guru') {
             <a href="/web_MG/subjects/create.php" class="btn btn-primary">+ Tambah Mata Pelajaran</a>
         <?php endif; ?>
     </div>
+
+    <?php if (!empty($errorFetch)): ?>
+        <div class="alert alert-error"><?php echo sanitize($errorFetch); ?></div>
+    <?php endif; ?>
 
     <?php if (empty($subjects)): ?>
         <div class="card">
@@ -59,7 +127,9 @@ if ($role === 'guru') {
                         <th>#</th>
                         <th>Mata Pelajaran</th>
                         <th>Kelas</th>
-                        <th>Deskripsi</th>
+                        <?php if ($role !== 'guru'): ?>
+                            <th>Guru</th>
+                        <?php endif; ?>
                         <th>Aksi</th>
                     </tr>
                 </thead>
@@ -68,8 +138,10 @@ if ($role === 'guru') {
                         <tr>
                             <td><?php echo $idx + 1; ?></td>
                             <td><?php echo sanitize($s['nama_mapel']); ?></td>
-                            <td><?php echo sanitize($s['nama_kelas']); ?></td>
-                            <td><?php echo sanitize($s['deskripsi'] ?? ''); ?></td>
+                            <td><?php echo sanitize(kelas_display($s)); ?></td>
+                            <?php if ($role !== 'guru'): ?>
+                                <td><?php echo sanitize($s['guru_name'] ?? '-'); ?></td>
+                            <?php endif; ?>
                             <td>
                                 <a href="/web_MG/subjects/view.php?id=<?php echo (int)$s['id']; ?>">Lihat</a>
                                 <?php if ($role === 'guru'): ?>

@@ -1,8 +1,15 @@
 <?php
+// materials/create.php
+// Tambah / Kirim Materi (guru) - menyimpan file_id atau file_path, kirim notifikasi ke murid kelas.
+
 /**
- * Tambah Materi Pembelajaran (Hardened)
- * Upload foto/teks/video untuk materi pembelajaran
+ * Requirements:
+ * - inc/auth.php (requireRole)
+ * - inc/db.php (getDB)
+ * - inc/helpers.php (uploadFile, createNotification, generateCsrfToken, verifyCsrfToken, sanitize)
+ * - serve_file.php exists for preview/download
  */
+
 require_once __DIR__ . '/../inc/auth.php';
 requireRole(['guru']);
 
@@ -15,322 +22,262 @@ $guruId = (int)($_SESSION['user_id'] ?? 0);
 $error = '';
 $success = '';
 
-// Ambil subjects yang diajar guru (prepared)
+// load subjects taught by guru (with class info)
 $stmt = $db->prepare("
-    SELECT s.id, s.nama_mapel, c.nama_kelas
+    SELECT s.id, s.nama_mapel, s.class_id, c.nama_kelas
     FROM subjects s
-    JOIN classes c ON s.class_id = c.id
+    LEFT JOIN classes c ON s.class_id = c.id
     WHERE s.guru_id = ?
-    ORDER BY c.nama_kelas, s.nama_mapel
+    ORDER BY COALESCE(c.nama_kelas, ''), s.nama_mapel
 ");
-$stmt->bind_param("i", $guruId);
-$stmt->execute();
-$res = $stmt->get_result();
-$subjects = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
-$stmt->close();
+$subjects = [];
+if ($stmt) {
+    $stmt->bind_param("i", $guruId);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $subjects = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
+    $stmt->close();
+}
 
-// Process form
+// helper log
+function _log_material($txt) {
+    $dir = __DIR__ . '/../storage';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    @file_put_contents($dir . '/material_upload_log.txt', "[".date('Y-m-d H:i:s')."] ".$txt."\n", FILE_APPEND | LOCK_EX);
+}
+
+// helper verify file_uploads record (if using file_id)
+function _file_exists_in_uploads($db, $fileId) {
+    $chk = $db->prepare("SELECT id FROM file_uploads WHERE id = ? LIMIT 1");
+    if (!$chk) return false;
+    $chk->bind_param("i", $fileId);
+    $chk->execute();
+    $r = $chk->get_result();
+    $exists = ($r && $r->num_rows > 0);
+    $chk->close();
+    return $exists;
+}
+
+// Process POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($subjects)) {
-    // CSRF check
     $token = $_POST['csrf_token'] ?? '';
     if (!verifyCsrfToken($token, 'create_material')) {
-        $error = 'Token keamanan tidak valid. Silakan muat ulang halaman dan coba lagi.';
+        $error = 'Token keamanan tidak valid. Silakan muat ulang halaman.';
     } else {
         $subjectId = (int)($_POST['subject_id'] ?? 0);
         $judul = trim($_POST['judul'] ?? '');
         $konten = trim($_POST['konten'] ?? '');
         $videoLink = trim($_POST['video_link'] ?? '');
+        $action = ($_POST['action'] ?? 'save'); // save | send
 
-        // Validasi minimal
         if ($subjectId <= 0) {
-            $error = 'Mata pelajaran harus dipilih';
+            $error = 'Pilih mata pelajaran.';
         } elseif ($judul === '') {
-            $error = 'Judul materi harus diisi';
+            $error = 'Judul materi harus diisi.';
         } else {
-            // Verify subject belongs to guru
-            $stmt = $db->prepare("SELECT id FROM subjects WHERE id = ? AND guru_id = ? LIMIT 1");
-            $stmt->bind_param("ii", $subjectId, $guruId);
-            $stmt->execute();
-            $r = $stmt->get_result();
-            if (!$r || $r->num_rows === 0) {
-                $stmt->close();
-                $error = 'Mata pelajaran tidak valid atau tidak berada di bawah pengajaran Anda.';
+            // verify subject belongs to guru
+            $v = $db->prepare("SELECT id, class_id FROM subjects WHERE id = ? AND guru_id = ? LIMIT 1");
+            if (!$v) {
+                $error = 'DB error: '. $db->error;
             } else {
-                $stmt->close();
+                $v->bind_param("ii", $subjectId, $guruId);
+                $v->execute();
+                $rv = $v->get_result();
+                if (!$rv || $rv->num_rows === 0) {
+                    $error = 'Mata pelajaran tidak valid atau bukan milik Anda.';
+                } else {
+                    $sub = $rv->fetch_assoc();
+                    $subject_class_id = (int)($sub['class_id'] ?? 0);
+                }
+                $v->close();
+            }
+        }
 
-                $fileId = null;
+        // handle upload: allow uploadFile() to return either file_id or filepath details
+        $fileId = null;
+        $filePath = null;
+        $uploadError = null;
+        if (empty($error) && isset($_FILES['file']) && isset($_FILES['file']['error']) && $_FILES['file']['error'] === UPLOAD_ERR_OK) {
+            if (function_exists('uploadFile')) {
+                // uploadFile should return associative array
+                $up = uploadFile($_FILES['file'], 'materials/');
+                if (!empty($up) && !empty($up['success'])) {
+                    // prefer file_id if present
+                    if (!empty($up['file_id'])) {
+                        $fileId = (int)$up['file_id'];
+                        // verify existence
+                        if (! _file_exists_in_uploads($db, $fileId)) {
+                            _log_material("upload returned file_id={$fileId} but file_uploads missing");
+                            $fileId = null;
+                            // fallback try filepath keys
+                        }
+                    }
+                    if ($fileId === null) {
+                        if (!empty($up['filepath'])) {
+                            $filePath = $up['filepath'];
+                        } elseif (!empty($up['filename'])) {
+                            // try guess relative path
+                            $filePath = 'materials/' . $up['filename'];
+                        } elseif (!empty($up['stored_name'])) {
+                            $filePath = 'materials/' . $up['stored_name'];
+                        }
+                    }
+                } else {
+                    $uploadError = $up['message'] ?? ($up['msg'] ?? json_encode($up));
+                }
+            } else {
+                $uploadError = 'Fungsi uploadFile() tidak ditemukan.';
+            }
 
-                // Handle file upload (foto/dokumen)
-                if (isset($_FILES['file']) && $_FILES['file']['error'] === UPLOAD_ERR_OK) {
-                    $uploadResult = uploadFile($_FILES['file'], 'materials/');
-                    if ($uploadResult['success']) {
-                        $fileId = (int)($uploadResult['file_id'] ?? 0);
+            if (!empty($uploadError)) {
+                _log_material("Upload failed for guru_id={$guruId} subject={$subjectId} : {$uploadError}");
+            }
+        }
+
+        if (empty($error) && $konten === '' && $fileId === null && empty($filePath) && $videoLink === '') {
+            $error = 'Minimal harus ada teks, file, atau link video.';
+        }
+
+        if (empty($error)) {
+            // Save material (transaction)
+            $db->begin_transaction();
+            try {
+                if ($fileId !== null) {
+                    $stmtIns = $db->prepare("
+                        INSERT INTO materials (subject_id, judul, konten, file_id, file_path, video_link, created_by, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, NULL, ?, ?, NOW(), NOW())
+                    ");
+                    if (!$stmtIns) throw new Exception('Prepare failed (with file_id): ' . $db->error);
+                    $stmtIns->bind_param("issiis", $subjectId, $judul, $konten, $fileId, $videoLink, $guruId);
+                } elseif (!empty($filePath)) {
+                    // store file_path (relative or absolute as returned by uploadFile)
+                    $stmtIns = $db->prepare("
+                        INSERT INTO materials (subject_id, judul, konten, file_id, file_path, video_link, created_by, created_at, updated_at)
+                        VALUES (?, ?, ?, NULL, ?, ?, ?, NOW(), NOW())
+                    ");
+                    if (!$stmtIns) throw new Exception('Prepare failed (with file_path): ' . $db->error);
+                    $stmtIns->bind_param("isssis", $subjectId, $judul, $konten, $filePath, $videoLink, $guruId);
+                } else {
+                    $stmtIns = $db->prepare("
+                        INSERT INTO materials (subject_id, judul, konten, file_id, file_path, video_link, created_by, created_at, updated_at)
+                        VALUES (?, ?, ?, NULL, NULL, ?, ?, NOW(), NOW())
+                    ");
+                    if (!$stmtIns) throw new Exception('Prepare failed (no file): ' . $db->error);
+                    $stmtIns->bind_param("issis", $subjectId, $judul, $konten, $videoLink, $guruId);
+                }
+
+                if (!$stmtIns->execute()) {
+                    $err = $stmtIns->error;
+                    $stmtIns->close();
+                    throw new Exception('Gagal menyimpan materi: ' . $err);
+                }
+                $materialId = $db->insert_id;
+                $stmtIns->close();
+
+                // notify students if send
+                if ($action === 'send' && !empty($subject_class_id)) {
+                    $stmtStu = $db->prepare("SELECT cu.user_id FROM class_user cu WHERE cu.class_id = ?");
+                    if ($stmtStu) {
+                        $stmtStu->bind_param("i", $subject_class_id);
+                        $stmtStu->execute();
+                        $resStu = $stmtStu->get_result();
+                        while ($row = $resStu->fetch_assoc()) {
+                            $studentId = (int)$row['user_id'];
+                            createNotification(
+                                $studentId,
+                                'Materi Baru: ' . $judul,
+                                'Guru mengirim materi baru untuk kelas Anda: ' . $judul,
+                                '/web_MG/materials/view.php?id=' . $materialId
+                            );
+                        }
+                        $stmtStu->close();
                     } else {
-                        $error = $uploadResult['message'] ?? 'Gagal upload file';
+                        _log_material("Notify prepare failed: " . $db->error);
                     }
                 }
 
-                // Validasi: minimal harus ada konten, file, atau video
-                if (empty($konten) && empty($fileId) && empty($videoLink)) {
-                    $error = 'Minimal harus ada teks, file, atau video';
+                $db->commit();
+
+                if ($action === 'send') {
+                    header('Location: ' . rtrim(BASE_URL, '/\\') . '/materials/list.php?sent=1');
+                    exit;
+                } else {
+                    header('Location: ' . rtrim(BASE_URL, '/\\') . '/materials/list.php?saved=1');
+                    exit;
                 }
 
-                if (empty($error)) {
-                    // Insert material — dua jalur jelas: dengan file_id atau tanpa
-                    if ($fileId !== null && $fileId > 0) {
-                        $stmtIns = $db->prepare("INSERT INTO materials (subject_id, judul, konten, file_id, video_link, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())");
-                        if (!$stmtIns) {
-                            $error = 'Gagal menyiapkan penyimpanan materi (1).';
-                        } else {
-                            // types: i (subject), s (judul), s (konten), i (file_id), s (video_link), i (created_by)
-                            $stmtIns->bind_param("issisi", $subjectId, $judul, $konten, $fileId, $videoLink, $guruId);
-                            if ($stmtIns->execute()) {
-                                $materialId = $db->insert_id;
-                            } else {
-                                $error = 'Gagal menyimpan materi: ' . $stmtIns->error;
-                            }
-                            $stmtIns->close();
-                        }
-                    } else {
-                        $stmtIns = $db->prepare("INSERT INTO materials (subject_id, judul, konten, file_id, video_link, created_by, created_at) VALUES (?, ?, ?, NULL, ?, ?, NOW())");
-                        if (!$stmtIns) {
-                            $error = 'Gagal menyiapkan penyimpanan materi (2).';
-                        } else {
-                            // types: i (subject), s (judul), s (konten), s (video_link), i (created_by)
-                            $stmtIns->bind_param("isssi", $subjectId, $judul, $konten, $videoLink, $guruId);
-                            if ($stmtIns->execute()) {
-                                $materialId = $db->insert_id;
-                            } else {
-                                $error = 'Gagal menyimpan materi: ' . $stmtIns->error;
-                            }
-                            $stmtIns->close();
-                        }
-                    }
-
-                    // Jika insert sukses, buat notifikasi untuk murid di kelas
-                    if (empty($error) && !empty($materialId)) {
-                        $stmtN = $db->prepare("
-                            SELECT cu.user_id
-                            FROM class_user cu
-                            JOIN subjects s ON cu.class_id = s.class_id
-                            WHERE s.id = ?
-                        ");
-                        if ($stmtN) {
-                            $stmtN->bind_param("i", $subjectId);
-                            $stmtN->execute();
-                            $rN = $stmtN->get_result();
-                            while ($row = $rN->fetch_assoc()) {
-                                $studentId = (int)$row['user_id'];
-                                // createNotification akan insert ke notifications dengan prepared stmt
-                                createNotification(
-                                    $studentId,
-                                    'Materi Baru',
-                                    'Materi baru: ' . $judul,
-                                    '/web_MG/materials/view.php?id=' . $materialId
-                                );
-                            }
-                            $stmtN->close();
-                        }
-                        // Redirect to list with success
-                        header('Location: /web_MG/materials/list.php?success=1');
-                        exit;
-                    }
-                }
+            } catch (Exception $e) {
+                $db->rollback();
+                $error = 'Terjadi kesalahan saat menyimpan materi: ' . $e->getMessage();
+                _log_material("Exception saving material: ".$e->getMessage());
             }
         }
     }
 }
 
-// Page render
+// render page
 $pageTitle = 'Tambah Materi Pembelajaran';
 include __DIR__ . '/../inc/header.php';
 ?>
 
-<style>
-.upload-section {
-    background: white;
-    border-radius: 12px;
-    padding: 24px;
-    margin-bottom: 20px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-.upload-option {
-    border: 2px dashed var(--gray-300);
-    border-radius: 8px;
-    padding: 24px;
-    text-align: center;
-    margin-bottom: 16px;
-    transition: all 0.3s;
-    cursor: pointer;
-}
-.upload-option:hover {
-    border-color: var(--primary);
-    background: var(--gray-50);
-}
-.upload-option.active {
-    border-color: var(--primary);
-    background: #eff6ff;
-}
-.upload-icon {
-    font-size: 48px;
-    margin-bottom: 12px;
-}
-.upload-label {
-    font-weight: 600;
-    color: var(--gray-700);
-    margin-bottom: 8px;
-}
-.upload-desc {
-    font-size: 14px;
-    color: var(--gray-500);
-}
-</style>
-
 <div class="container">
     <div class="page-header">
         <h1>Tambah Materi Pembelajaran</h1>
-        <a href="/web_MG/materials/list.php" class="btn btn-secondary">← Kembali</a>
+        <a href="<?php echo rtrim(BASE_URL, '/\\'); ?>/materials/list.php" class="btn btn-secondary">← Kembali</a>
     </div>
 
-    <?php if (!empty($error)): ?>
-        <div class="alert alert-error"><?php echo sanitize($error); ?></div>
-    <?php endif; ?>
-
-    <?php if (!empty($success)): ?>
-        <div class="alert alert-success"><?php echo sanitize($success); ?></div>
-    <?php endif; ?>
+    <?php if ($error): ?><div class="alert alert-error"><?php echo sanitize($error); ?></div><?php endif; ?>
+    <?php if ($success): ?><div class="alert alert-success"><?php echo sanitize($success); ?></div><?php endif; ?>
 
     <?php if (empty($subjects)): ?>
-        <div class="card">
-            <p>Anda belum memiliki mata pelajaran.</p>
-            <div style="margin-top: 20px;">
-                <a href="/web_MG/subjects/create.php" class="btn btn-primary">+ Buat Mata Pelajaran Baru</a>
-                <a href="/web_MG/subjects/list.php" class="btn btn-secondary">Lihat Mata Pelajaran Saya</a>
-            </div>
-        </div>
+        <div class="card"><p>Anda belum memiliki mata pelajaran.</p></div>
     <?php else: ?>
-        <form method="POST" action="" enctype="multipart/form-data" id="materialForm">
+        <form method="POST" enctype="multipart/form-data" id="materialForm">
             <?php $csrf = generateCsrfToken('create_material'); ?>
             <input type="hidden" name="csrf_token" value="<?php echo sanitize($csrf); ?>">
+            <input type="hidden" name="action" id="form_action" value="save">
 
-            <!-- Pilih Mata Pelajaran -->
             <div class="card">
                 <div class="form-group">
                     <label for="subject_id">Mata Pelajaran *</label>
-                    <select id="subject_id" name="subject_id" required style="width: 100%; padding: 12px;">
+                    <select id="subject_id" name="subject_id" required>
                         <option value="">Pilih Mata Pelajaran</option>
-                        <?php foreach ($subjects as $subject): ?>
-                            <option value="<?php echo (int)$subject['id']; ?>"
-                                <?php echo (isset($_POST['subject_id']) && $_POST['subject_id'] == $subject['id']) ? 'selected' : ''; ?>>
-                                <?php echo sanitize($subject['nama_mapel']); ?> - <?php echo sanitize($subject['nama_kelas']); ?>
+                        <?php foreach ($subjects as $s): ?>
+                            <option value="<?php echo (int)$s['id']; ?>" <?php echo (isset($_POST['subject_id']) && $_POST['subject_id']==$s['id'])? 'selected':''; ?>>
+                                <?php echo sanitize($s['nama_mapel'] . ' — ' . ($s['nama_kelas'] ?? '')); ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
                 </div>
 
                 <div class="form-group">
-                    <label for="judul">Judul Materi *</label>
-                    <input
-                        type="text"
-                        id="judul"
-                        name="judul"
-                        required
-                        placeholder="Contoh: Materi Aljabar, Sejarah Indonesia, dll"
-                        value="<?php echo isset($_POST['judul']) ? sanitize($_POST['judul']) : ''; ?>"
-                    >
-                </div>
-            </div>
-
-            <!-- Upload Options -->
-            <div class="upload-section">
-                <h3 style="margin-bottom: 20px;">Pilih Jenis Konten</h3>
-
-                <!-- Upload Foto/Dokumen -->
-                <div class="upload-option" onclick="document.getElementById('file').click()">
-                    <div class="upload-icon">📷</div>
-                    <div class="upload-label">Upload Foto / Dokumen</div>
-                    <div class="upload-desc">Upload file PDF, DOC, DOCX, JPG, PNG, atau ZIP</div>
-                    <input
-                        type="file"
-                        id="file"
-                        name="file"
-                        accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip"
-                        style="display: none;"
-                        onchange="handleFileSelect(this)"
-                    >
-                    <div id="fileInfo" style="margin-top: 12px; color: var(--primary); font-weight: 500; display: none;"></div>
+                    <label>Judul Materi *</label>
+                    <input type="text" name="judul" required value="<?php echo isset($_POST['judul'])? sanitize($_POST['judul']) : ''; ?>">
                 </div>
 
-                <!-- Upload Teks -->
-                <div class="upload-option" onclick="document.getElementById('konten').focus()">
-                    <div class="upload-icon">📝</div>
-                    <div class="upload-label">Tulis Teks</div>
-                    <div class="upload-desc">Tuliskan konten materi dalam bentuk teks</div>
-                </div>
-                <div class="form-group" style="margin-top: 16px;">
-                    <textarea
-                        id="konten"
-                        name="konten"
-                        placeholder="Tuliskan konten materi di sini..."
-                        rows="8"
-                        style="width: 100%;"
-                    ><?php echo isset($_POST['konten']) ? sanitize($_POST['konten']) : ''; ?></textarea>
+                <div class="form-group">
+                    <label>Upload File (opsional)</label>
+                    <input type="file" name="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip">
+                    <small>File akan disimpan dan (jika bisa) didaftarkan di file_uploads.</small>
                 </div>
 
-                <!-- Upload Video -->
-                <div class="upload-option" onclick="document.getElementById('video_link').focus()">
-                    <div class="upload-icon">🎥</div>
-                    <div class="upload-label">Link Video</div>
-                    <div class="upload-desc">Masukkan link video YouTube atau platform lainnya</div>
+                <div class="form-group">
+                    <label>Konten (teks)</label>
+                    <textarea name="konten" rows="6" style="width:100%;"><?php echo isset($_POST['konten'])? sanitize($_POST['konten']):''; ?></textarea>
                 </div>
-                <div class="form-group" style="margin-top: 16px;">
-                    <input
-                        type="url"
-                        id="video_link"
-                        name="video_link"
-                        placeholder="https://youtube.com/watch?v=... atau link video lainnya"
-                        value="<?php echo isset($_POST['video_link']) ? sanitize($_POST['video_link']) : ''; ?>"
-                        style="width: 100%;"
-                    >
-                </div>
-            </div>
 
-            <div class="card">
-                <p style="color: var(--gray-600); font-size: 14px; margin-bottom: 16px;">
-                    <strong>Catatan:</strong> Minimal harus ada salah satu: File, Teks, atau Video
-                </p>
-                <button type="submit" class="btn btn-primary btn-block" style="font-size: 16px; padding: 16px;">
-                    💾 Simpan Materi
-                </button>
+                <div class="form-group">
+                    <label>Link Video (opsional)</label>
+                    <input type="url" name="video_link" value="<?php echo isset($_POST['video_link'])? sanitize($_POST['video_link']):''; ?>">
+                </div>
+
+                <div style="display:flex;gap:12px;">
+                    <button type="button" class="btn btn-secondary" onclick="document.getElementById('form_action').value='save'; document.getElementById('materialForm').submit();">💾 Simpan (Draft)</button>
+                    <button type="button" class="btn btn-primary" onclick="document.getElementById('form_action').value='send'; document.getElementById('materialForm').submit();">🚀 Kirim ke Siswa</button>
+                </div>
             </div>
         </form>
     <?php endif; ?>
 </div>
-
-<script>
-function handleFileSelect(input) {
-    if (input.files && input.files[0]) {
-        const file = input.files[0];
-        const fileInfo = document.getElementById('fileInfo');
-        const fileSize = (file.size / 1024 / 1024).toFixed(2);
-        fileInfo.textContent = `File dipilih: ${file.name} (${fileSize} MB)`;
-        fileInfo.style.display = 'block';
-    }
-}
-
-// Highlight upload option when focused
-document.getElementById('konten').addEventListener('focus', function() {
-    this.parentElement.previousElementSibling.classList.add('active');
-});
-document.getElementById('konten').addEventListener('blur', function() {
-    this.parentElement.previousElementSibling.classList.remove('active');
-});
-document.getElementById('video_link').addEventListener('focus', function() {
-    this.parentElement.previousElementSibling.classList.add('active');
-});
-document.getElementById('video_link').addEventListener('blur', function() {
-    this.parentElement.previousElementSibling.classList.remove('active');
-});
-</script>
 
 <?php include __DIR__ . '/../inc/footer.php'; ?>

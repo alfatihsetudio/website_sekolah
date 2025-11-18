@@ -1,0 +1,8 @@
+[2025-11-17 21:44:41] Upload failed for guru_id=5 subject=7 : Record file_uploads tidak ditemukan untuk file_id=9
+[2025-11-17 22:01:12] Upload failed for guru_id=5 subject=7 : Record file_uploads tidak ditemukan untuk file_id=10
+[2025-11-17 22:07:38] Upload produced file_id=11 but no record in file_uploads
+[2025-11-17 22:07:38] Upload failed for guru_id=5 subject=7 : Record file_uploads tidak ditemukan untuk file_id=11
+[2025-11-17 22:18:43] Upload produced file_id=13 but no record in file_uploads
+[2025-11-17 22:18:43] Upload failed for guru_id=5 subject=7 : Record file_uploads tidak ditemukan untuk file_id=13
+[2025-11-17 22:36:39] upload returned file_id=14 but file_uploads missing
+[2025-11-17 22:36:47] upload returned file_id=15 but file_uploads missing

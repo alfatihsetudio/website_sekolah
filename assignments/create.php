@@ -1,14 +1,9 @@
 <?php
 // assignments/create.php
-// Guru membuat tugas untuk 1 kelas (bisa teks, lampiran, catatan suara, atau tautan video)
-
-require_once __DIR__ . '/../inc/helpers.php'; // PASTIKAN path benar
+require_once __DIR__ . '/../inc/helpers.php';
 require_once __DIR__ . '/../inc/auth.php';
 requireRole(['guru']);
-
-
 require_once __DIR__ . '/../inc/db.php';
-
 
 $db = getDB();
 $guruId = (int)($_SESSION['user_id'] ?? 0);
@@ -18,26 +13,31 @@ $error = '';
 $success = '';
 
 // Ambil daftar subjects yang diampu guru (beserta kelas terkait)
-$stmt = $db->prepare("SELECT s.id AS subject_id, s.nama_mapel, s.class_id, c.nama_kelas
-                      FROM subjects s
-                      JOIN classes c ON s.class_id = c.id
-                      WHERE s.guru_id = ?
-                      ORDER BY c.nama_kelas, s.nama_mapel");
-$stmt->bind_param("i", $guruId);
-$stmt->execute();
-$res = $stmt->get_result();
-$subjects = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
-$stmt->close();
-
-// Ambil daftar kelas unik yang guru punya mapelnya (untuk dropdown target_class)
-$kelasList = [];
-foreach ($subjects as $s) {
-    $kelasList[$s['class_id']] = $s['nama_kelas'];
+$stmt = $db->prepare("
+    SELECT s.id AS subject_id, s.nama_mapel, s.class_id, c.nama_kelas
+    FROM subjects s
+    JOIN classes c ON s.class_id = c.id
+    WHERE s.guru_id = ?
+    ORDER BY c.nama_kelas, s.nama_mapel
+");
+$subjects = [];
+if ($stmt) {
+    $stmt->bind_param("i", $guruId);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $subjects = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
+    $stmt->close();
 }
 
-// Process form submit
+// Buat daftar kelas unik dari subjects (untuk dropdown)
+$kelasList = [];
+foreach ($subjects as $s) {
+    $cid = (int)$s['class_id'];
+    if ($cid && !isset($kelasList[$cid])) $kelasList[$cid] = $s['nama_kelas'];
+}
+
+// Proses submit
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Ambil input
     $subjectId = (int)($_POST['subject_id'] ?? 0);
     $targetClassId = (int)($_POST['target_class_id'] ?? 0);
     $judul = trim($_POST['judul'] ?? '');
@@ -46,85 +46,75 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $videoLink = trim($_POST['video_link'] ?? '');
     $deadlineRaw = trim($_POST['deadline'] ?? '');
 
-    // Basic validation
+    // validasi dasar
     if ($subjectId <= 0 || $targetClassId <= 0 || $judul === '') {
         $error = 'Pilih mata pelajaran, pilih kelas tujuan, dan isi judul tugas.';
     } else {
-        // Verify that the subject belongs to this guru and that subject.class_id == targetClassId
+        // verifikasi subject milik guru
         $stmt = $db->prepare("SELECT id, class_id FROM subjects WHERE id = ? AND guru_id = ? LIMIT 1");
-        $stmt->bind_param("ii", $subjectId, $guruId);
-        $stmt->execute();
-        $r = $stmt->get_result();
-        if (!$r || $r->num_rows === 0) {
-            $error = 'Mata pelajaran tidak valid atau bukan milik Anda.';
+        if (!$stmt) {
+            $error = 'DB error: ' . $db->error;
         } else {
-            $subRow = $r->fetch_assoc();
-            if ((int)$subRow['class_id'] !== $targetClassId) {
-                // Untuk keamanan, tolak jika subject tidak terkait ke kelas tujuan
-                $error = 'Mata pelajaran ini tidak terkait dengan kelas yang dipilih.';
+            $stmt->bind_param("ii", $subjectId, $guruId);
+            $stmt->execute();
+            $r = $stmt->get_result();
+            if (!$r || $r->num_rows === 0) {
+                $error = 'Mata pelajaran tidak valid atau bukan milik Anda.';
+            } else {
+                $sub = $r->fetch_assoc();
+                if ((int)$sub['class_id'] !== $targetClassId) {
+                    $error = 'Mata pelajaran ini tidak terkait dengan kelas yang dipilih.';
+                }
             }
+            $stmt->close();
         }
-        $stmt->close();
     }
 
-    // Parse deadline if provided (optional)
-    $deadlineSql = 'NULL';
+    // parse deadline jika ada
+    $deadline = null;
     if ($deadlineRaw !== '') {
-        $dt = date('Y-m-d H:i:s', strtotime($deadlineRaw));
-        if (!$dt) {
+        $t = strtotime($deadlineRaw);
+        if ($t === false) {
             $error = 'Format deadline tidak valid.';
         } else {
-            $deadlineSql = "'" . $db->real_escape_string($dt) . "'";
+            $deadline = date('Y-m-d H:i:s', $t);
         }
     }
 
     if (empty($error)) {
-        // Prepare insertion into assignments
-        $judulEsc = $db->real_escape_string($judul);
-        $desEsc = $db->real_escape_string($deskripsi);
-        $sessionEsc = $db->real_escape_string($sessionInfo);
-        $videoEsc = $db->real_escape_string($videoLink);
-
-        // Use prepared statement for insert (file_id null initially)
-        $sql = "INSERT INTO assignments (subject_id, target_class_id, judul, deskripsi, file_id, deadline, created_by, created_at, session_info, updated_at)
-                VALUES (?, ?, ?, ?, NULL, " . ($deadlineSql === 'NULL' ? "NULL" : "?") . ", ?, NOW(), ?, NOW())";
-
-        // We will bind variables depending on whether deadline provided
-        if ($deadlineSql === 'NULL') {
-            $stmt = $db->prepare("INSERT INTO assignments (subject_id, target_class_id, judul, deskripsi, file_id, deadline, created_by, created_at, session_info, updated_at)
-                                  VALUES (?, ?, ?, ?, NULL, NULL, ?, NOW(), ?, NOW())");
-            if (!$stmt) {
-                $error = 'Gagal menyiapkan statement (1).';
-            } else {
-                $stmt->bind_param("iissis", $subjectId, $targetClassId, $judulEsc, $desEsc, $guruId, $sessionEsc);
-            }
+        // prepare insert dengan/ tanpa deadline
+        if ($deadline === null) {
+            $stmtIns = $db->prepare("
+                INSERT INTO assignments
+                (subject_id, target_class_id, judul, deskripsi, file_id, deadline, created_by, created_at, session_info, updated_at)
+                VALUES (?, ?, ?, ?, NULL, NULL, ?, NOW(), ?, NOW())
+            ");
+            if ($stmtIns) $stmtIns->bind_param("iissis", $subjectId, $targetClassId, $judul, $deskripsi, $guruId, $sessionInfo);
         } else {
-            $stmt = $db->prepare("INSERT INTO assignments (subject_id, target_class_id, judul, deskripsi, file_id, deadline, created_by, created_at, session_info, updated_at)
-                                  VALUES (?, ?, ?, ?, NULL, ?, ?, NOW(), ?, NOW())");
-            if (!$stmt) {
-                $error = 'Gagal menyiapkan statement (2).';
-            } else {
-                $stmt->bind_param("iisssis", $subjectId, $targetClassId, $judulEsc, $desEsc, $dt, $guruId, $sessionEsc);
-            }
+            $stmtIns = $db->prepare("
+                INSERT INTO assignments
+                (subject_id, target_class_id, judul, deskripsi, file_id, deadline, created_by, created_at, session_info, updated_at)
+                VALUES (?, ?, ?, ?, NULL, ?, ?, NOW(), ?, NOW())
+            ");
+            if ($stmtIns) $stmtIns->bind_param("iisssis", $subjectId, $targetClassId, $judul, $deskripsi, $deadline, $guruId, $sessionInfo);
         }
 
-        if (empty($error)) {
-            $execOk = $stmt->execute();
-            if (!$execOk) {
-                $error = 'Gagal menyimpan tugas: ' . $stmt->error;
-                $stmt->close();
+        if (!$stmtIns) {
+            $error = 'Gagal menyiapkan statement: ' . $db->error;
+        } else {
+            if (!$stmtIns->execute()) {
+                $error = 'Gagal menyimpan tugas: ' . $stmtIns->error;
+                $stmtIns->close();
             } else {
                 $assignmentId = $db->insert_id;
-                $stmt->close();
+                $stmtIns->close();
 
-                // Handle file uploads (multiple attachments)
-                $uploadedFiles = []; // array of ['file_id'=>int, 'type'=>string]
-
-                // FILE[] multiple attachments
+                // Handle uploads (menggunakan uploadFile() di helpers Anda)
+                $uploadedFiles = [];
                 if (isset($_FILES['file']) && is_array($_FILES['file']['name'])) {
-                    $fileCount = count($_FILES['file']['name']);
-                    for ($i = 0; $i < $fileCount; $i++) {
-                        if (isset($_FILES['file']['error'][$i]) && $_FILES['file']['error'][$i] === UPLOAD_ERR_OK) {
+                    $count = count($_FILES['file']['name']);
+                    for ($i=0;$i<$count;$i++) {
+                        if ($_FILES['file']['error'][$i] === UPLOAD_ERR_OK) {
                             $single = [
                                 'name' => $_FILES['file']['name'][$i],
                                 'type' => $_FILES['file']['type'][$i],
@@ -132,80 +122,87 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 'error' => $_FILES['file']['error'][$i],
                                 'size' => $_FILES['file']['size'][$i],
                             ];
-                            $up = uploadFile($single, 'assignments/');
-                            if ($up['success']) {
-                                $uploadedFiles[] = ['file_id' => $up['file_id'], 'type' => 'attachment'];
+                            $up = function_exists('uploadFile') ? uploadFile($single, 'assignments/') : ['success'=>false];
+                            if (!empty($up['success']) && !empty($up['file_id'])) {
+                                $uploadedFiles[] = ['file_id' => (int)$up['file_id'], 'type' => 'attachment'];
                             }
                         }
                     }
                 }
-
-                // Voice note (single file input name="voice")
                 if (isset($_FILES['voice']) && isset($_FILES['voice']['error']) && $_FILES['voice']['error'] === UPLOAD_ERR_OK) {
-                    $up = uploadFile($_FILES['voice'], 'assignments/voice/');
-                    if ($up['success']) {
-                        $uploadedFiles[] = ['file_id' => $up['file_id'], 'type' => 'voice'];
+                    $up = function_exists('uploadFile') ? uploadFile($_FILES['voice'], 'assignments/voice/') : ['success'=>false];
+                    if (!empty($up['success']) && !empty($up['file_id'])) {
+                        $uploadedFiles[] = ['file_id' => (int)$up['file_id'], 'type' => 'voice'];
                     }
                 }
 
-                // If video link provided, already saved in assignments.video_link below
-                if (!empty($videoEsc)) {
-                    // update video_link column
+                // simpan video_link apabila ada
+                if (!empty($videoLink)) {
                     $stmt2 = $db->prepare("UPDATE assignments SET video_link = ? WHERE id = ?");
                     if ($stmt2) {
-                        $stmt2->bind_param("si", $videoEsc, $assignmentId);
+                        $stmt2->bind_param("si", $videoLink, $assignmentId);
                         $stmt2->execute();
                         $stmt2->close();
                     }
                 }
 
-                // Insert uploadedFiles into assignment_files table
+                // insert assignment_files
                 if (!empty($uploadedFiles)) {
-                    $insStmt = $db->prepare("INSERT INTO assignment_files (assignment_id, file_id, file_type) VALUES (?, ?, ?)");
-                    if ($insStmt) {
+                    $insAf = $db->prepare("INSERT INTO assignment_files (assignment_id, file_id, file_type) VALUES (?, ?, ?)");
+                    if ($insAf) {
                         foreach ($uploadedFiles as $uf) {
                             $fid = (int)$uf['file_id'];
-                            $ftype = $uf['type'];
-                            $insStmt->bind_param("iis", $assignmentId, $fid, $ftype);
-                            $insStmt->execute();
+                            $ft = $uf['type'];
+                            $insAf->bind_param("iis", $assignmentId, $fid, $ft);
+                            $insAf->execute();
                         }
-                        $insStmt->close();
+                        $insAf->close();
                     }
                 }
 
-                // Create notifications for all students in target class
+                // buat notifikasi untuk setiap murid di class_user
                 $stmtStu = $db->prepare("SELECT cu.user_id FROM class_user cu WHERE cu.class_id = ?");
-                $stmtStu->bind_param("i", $targetClassId);
-                $stmtStu->execute();
-                $resStu = $stmtStu->get_result();
-                $titleNotif = "Tugas Baru: " . $judul;
-                $msgNotif = "Guru mengirim tugas (" . ($sessionInfo ?: 'tanpa sesi') . ") untuk kelas " . ($kelasList[$targetClassId] ?? 'kelas') . ".";
-                while ($row = $resStu->fetch_assoc()) {
-                    createNotification($row['user_id'], $titleNotif, $msgNotif, '/web_MG/assignments/view.php?id=' . $assignmentId);
+                if ($stmtStu) {
+                    $stmtStu->bind_param("i", $targetClassId);
+                    $stmtStu->execute();
+                    $resStu = $stmtStu->get_result();
+                    $title = "Tugas Baru: " . $judul;
+                    $msg = "Guru mengirim tugas (" . ($sessionInfo ?: 'tanpa sesi') . ") untuk kelas " . ($kelasList[$targetClassId] ?? $targetClassId) . ".";
+                    while ($rw = $resStu->fetch_assoc()) {
+                        if (function_exists('createNotification')) {
+                            createNotification($rw['user_id'], $title, $msg, '/web_MG/assignments/view.php?id=' . $assignmentId);
+                        } else {
+                            // fallback: insert ke notifications jika createNotification tidak ada
+                            $insN = $db->prepare("INSERT INTO notifications (user_id, title, message, link, created_at) VALUES (?, ?, ?, ?, NOW())");
+                            if ($insN) {
+                                $link = '/web_MG/assignments/view.php?id=' . $assignmentId;
+                                $insN->bind_param("isss", $rw['user_id'], $title, $msg, $link);
+                                $insN->execute();
+                                $insN->close();
+                            }
+                        }
+                    }
+                    $stmtStu->close();
                 }
-                $stmtStu->close();
 
-                // Redirect to view page of assignment
-                header("Location: /web_MG/assignments/view.php?id=" . $assignmentId);
+                // redirect ke halaman view
+                header("Location: " . rtrim(BASE_URL, '/\\') . "/assignments/view.php?id=" . $assignmentId);
                 exit;
             }
         }
     }
 }
 
-// Render form
+// render page
 include __DIR__ . '/../inc/header.php';
 ?>
-
 <div class="container">
     <div class="page-header">
         <h1>Buat Tugas Baru</h1>
-        <a href="/web_MG/assignments/list.php" class="btn btn-secondary">← Kembali</a>
+        <a href="<?php echo rtrim(BASE_URL, '/\\'); ?>/assignments/list.php" class="btn btn-secondary">← Kembali</a>
     </div>
 
-    <?php if ($error): ?>
-        <div class="alert alert-error"><?php echo sanitize($error); ?></div>
-    <?php endif; ?>
+    <?php if ($error): ?><div class="alert alert-error"><?php echo sanitize($error); ?></div><?php endif; ?>
 
     <div class="card">
         <form method="POST" enctype="multipart/form-data">
@@ -214,13 +211,11 @@ include __DIR__ . '/../inc/header.php';
                 <select id="subject_id" name="subject_id" required>
                     <option value="">Pilih Mata Pelajaran</option>
                     <?php foreach ($subjects as $s): ?>
-                        <option value="<?php echo (int)$s['subject_id']; ?>"
-                            data-class-id="<?php echo (int)$s['class_id']; ?>">
+                        <option value="<?php echo (int)$s['subject_id']; ?>" data-class-id="<?php echo (int)$s['class_id']; ?>">
                             <?php echo sanitize($s['nama_kelas']) . ' — ' . sanitize($s['nama_mapel']); ?>
                         </option>
                     <?php endforeach; ?>
                 </select>
-                <small>Pilih mata pelajaran yang sesuai.</small>
             </div>
 
             <div class="form-group">
@@ -231,67 +226,63 @@ include __DIR__ . '/../inc/header.php';
                         <option value="<?php echo (int)$cid; ?>"><?php echo sanitize($cname); ?></option>
                     <?php endforeach; ?>
                 </select>
-                <small>Pilih kelas yang akan menerima tugas.</small>
             </div>
 
             <div class="form-group">
                 <label for="judul">Judul Tugas *</label>
-                <input type="text" id="judul" name="judul" required placeholder="Contoh: PR Halaman 10 soal 1-5">
+                <input type="text" id="judul" name="judul" required value="<?php echo isset($_POST['judul']) ? sanitize($_POST['judul']) : ''; ?>">
             </div>
 
             <div class="form-group">
-                <label for="deskripsi">Deskripsi / Instruksi</label>
-                <textarea id="deskripsi" name="deskripsi" rows="5" placeholder="Petunjuk tugas..."></textarea>
+                <label for="deskripsi">Deskripsi</label>
+                <textarea id="deskripsi" name="deskripsi" rows="5"><?php echo isset($_POST['deskripsi']) ? sanitize($_POST['deskripsi']) : ''; ?></textarea>
             </div>
 
             <div class="form-group">
-                <label for="session_info">Sesi / Pertemuan (contoh: Pertemuan Senin 1)</label>
-                <input type="text" id="session_info" name="session_info" placeholder="Pertemuan Senin / Sesi 1">
+                <label for="session_info">Sesi / Pertemuan</label>
+                <input type="text" id="session_info" name="session_info" value="<?php echo isset($_POST['session_info']) ? sanitize($_POST['session_info']) : ''; ?>">
             </div>
 
             <div class="form-group">
                 <label for="deadline">Batas Waktu (opsional)</label>
-                <input type="datetime-local" id="deadline" name="deadline">
+                <input type="datetime-local" id="deadline" name="deadline" value="<?php echo isset($_POST['deadline']) ? sanitize($_POST['deadline']) : ''; ?>">
             </div>
 
             <div class="form-group">
-                <label>Upload Lampiran (foto / dokumen) — boleh banyak</label>
-                <input type="file" name="file[]" multiple accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip">
-                <small>Maks <?php echo (MAX_FILE_SIZE/1024/1024); ?> MB per berkas.</small>
+                <label>Lampiran (boleh banyak)</label>
+                <input type="file" name="file[]" multiple>
             </div>
 
             <div class="form-group">
-                <label>Catatan Suara (opsional)</label>
+                <label>Catatan suara (opsional)</label>
                 <input type="file" name="voice" accept="audio/*">
-                <small>Gunakan jika ingin memberikan instruksi suara.</small>
             </div>
 
             <div class="form-group">
                 <label for="video_link">Video (link) — opsional</label>
-                <input type="url" id="video_link" name="video_link" placeholder="https://youtube.com/...">
+                <input type="url" id="video_link" name="video_link" value="<?php echo isset($_POST['video_link']) ? sanitize($_POST['video_link']) : ''; ?>">
             </div>
 
-            <button type="submit" class="btn btn-primary btn-block">Kirim Tugas ke Kelas</button>
+            <button class="btn btn-primary" type="submit">Kirim Tugas ke Kelas</button>
         </form>
     </div>
 </div>
 
 <script>
-// UX helper: ketika guru memilih mata pelajaran, auto pilih kelas tujuan sesuai subject.class_id
-document.getElementById('subject_id').addEventListener('change', function() {
-    const opt = this.options[this.selectedIndex];
-    const classId = opt.getAttribute('data-class-id');
-    if (classId) {
-        const target = document.getElementById('target_class_id');
-        // set selected option if exists
-        for (let i = 0; i < target.options.length; i++) {
-            if (target.options[i].value === classId) {
-                target.selectedIndex = i;
-                break;
+// saat pilih subject -> set target_class_id otomatis
+const subj = document.getElementById('subject_id');
+if (subj) {
+    subj.addEventListener('change', function() {
+        const opt = this.options[this.selectedIndex];
+        const classId = opt.getAttribute('data-class-id');
+        if (classId) {
+            const tgt = document.getElementById('target_class_id');
+            for (let i=0;i<tgt.options.length;i++){
+                if (tgt.options[i].value === classId) { tgt.selectedIndex = i; break; }
             }
         }
-    }
-});
+    });
+}
 </script>
 
 <?php include __DIR__ . '/../inc/footer.php'; ?>
