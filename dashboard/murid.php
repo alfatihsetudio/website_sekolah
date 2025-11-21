@@ -179,130 +179,221 @@ $pageTitle = 'Dashboard Murid';
 include __DIR__ . '/../inc/header.php';
 ?>
 
+<style>
+/* Sedikit styling khusus dashboard murid biar rapi */
+.student-header {
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:12px;
+    flex-wrap:wrap;
+    margin-bottom:18px;
+}
+.student-header h1 {
+    margin:0 0 4px 0;
+    font-size:1.4rem;
+}
+.student-header p {
+    margin:0;
+    font-size:0.95rem;
+    color:#6b7280;
+}
+.student-header-actions {
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+    justify-content:flex-end;
+}
+.student-grid-top {
+    display:grid;
+    grid-template-columns: minmax(0,2fr) minmax(0,3fr);
+    gap:16px;
+}
+.student-grid-bottom {
+    display:grid;
+    grid-template-columns: minmax(0,3fr) minmax(0,2fr);
+    gap:16px;
+    margin-top:18px;
+}
+@media(max-width:900px){
+    .student-grid-top,
+    .student-grid-bottom {
+        grid-template-columns:1fr;
+    }
+}
+.info-list dt {
+    font-weight:600;
+    color:#4b5563;
+    font-size:0.86rem;
+}
+.info-list dd {
+    margin:0 0 6px 0;
+    color:#111827;
+    font-size:0.95rem;
+}
+.badge-small {
+    display:inline-block;
+    padding:2px 8px;
+    border-radius:999px;
+    border:1px solid #e5e7eb;
+    background:#f9fafb;
+    font-size:0.8rem;
+    color:#4b5563;
+    margin-right:4px;
+    margin-top:4px;
+}
+.task-item {
+    padding:8px 0;
+    border-bottom:1px solid #e5e7eb;
+}
+.task-item:last-child {
+    border-bottom:none;
+}
+.task-title {
+    font-weight:600;
+    color:#111827;
+    font-size:0.95rem;
+}
+.task-meta {
+    font-size:0.85rem;
+    color:#6b7280;
+}
+.quick-section-title {
+    font-weight:600;
+    font-size:0.95rem;
+}
+.quick-button-row {
+    margin-top:6px;
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px;
+}
+.btn-small {
+    padding:6px 12px;
+    font-size:0.85rem;
+}
+</style>
+
 <div class="container">
 
-    <!-- Judul + salam + tombol akun -->
-    <div class="page-header" style="margin-bottom:18px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+    <!-- HEADER: sapaan + aksi utama -->
+    <div class="student-header card">
         <div>
-            <h1 style="margin-bottom:4px;">Dashboard Murid</h1>
-            <p style="margin:0;font-size:0.95rem;color:#6b7280;">
-                Selamat datang, <strong><?php echo sanitize($user['nama'] ?: $user['email']); ?></strong>.
-                Ini adalah ringkasan kelas dan tugas Anda.
+            <h1>Dashboard Murid</h1>
+            <p>
+                Selamat datang, <strong><?php echo sanitize($user['nama'] ?: $user['email']); ?></strong>.<br>
+                Di sini kamu bisa melihat ringkasan kelas, tugas, dan masuk ke Space Belajar.
             </p>
         </div>
-
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <!-- Tombol ganti password -->
+        <div class="student-header-actions">
+            <a href="<?php echo $baseUrl; ?>/space_belajar/dashboard.php"
+               class="btn btn-primary btn-small">
+                Space Belajar
+            </a>
+            <a href="<?php echo $baseUrl; ?>/calendar/index.php"
+               class="btn btn-secondary btn-small">
+                Kalender Belajar
+            </a>
             <a href="<?php echo $baseUrl; ?>/account/change_password_user.php"
-               class="btn btn-secondary">
+               class="btn btn-secondary btn-small">
                 Ganti password
             </a>
-            <!-- Tombol logout -->
             <a href="<?php echo $baseUrl; ?>/auth/logout.php"
-               class="btn btn-primary"
-               onclick="return confirm('Yakin ingin keluar dari akun?');">
+               class="btn btn-outline btn-small"
+               onclick="return confirm('Yakin ingin keluar dari akun ini?');">
                 Keluar
             </a>
         </div>
     </div>
 
-    <!-- Baris atas: profil singkat + ringkasan angka -->
-    <div style="display:grid;grid-template-columns: minmax(0,2fr) minmax(0,3fr);gap:16px;flex-wrap:wrap;">
+    <!-- GRID ATAS: Info akun + Ringkasan tugas -->
+    <div class="student-grid-top">
 
-        <!-- Kartu info akun -->
+        <!-- Info akun -->
         <div class="card" style="border-radius:14px;">
             <h2 style="margin-top:0;margin-bottom:8px;font-size:1.1rem;">Info Akun</h2>
-            <dl style="margin:0;font-size:0.95rem;">
-                <div style="margin-bottom:6px;">
-                    <dt style="font-weight:600;color:#4b5563;">Tipe Akun</dt>
-                    <dd style="margin:0;color:#111827;">Murid / Siswa</dd>
-                </div>
-                <div style="margin-bottom:6px;">
-                    <dt style="font-weight:600;color:#4b5563;">Nama</dt>
-                    <dd style="margin:0;color:#111827;"><?php echo sanitize($user['nama'] ?: '-'); ?></dd>
-                </div>
-                <div style="margin-bottom:6px;">
-                    <dt style="font-weight:600;color:#4b5563;">Email</dt>
-                    <dd style="margin:0;color:#111827;"><?php echo sanitize($user['email']); ?></dd>
-                </div>
-                <div style="margin-bottom:6px;">
-                    <dt style="font-weight:600;color:#4b5563;">Kelas Utama</dt>
-                    <dd style="margin:0;color:#111827;">
-                        <?php
-                        if ($primaryClass) {
-                            $label = trim(($primaryClass['level'] ?? '') . ' ' . ($primaryClass['jurusan'] ?? ''));
-                            if (!empty($primaryClass['nama_kelas']) &&
-                                trim($primaryClass['nama_kelas']) !== trim($label)) {
-                                $label .= ' (' . $primaryClass['nama_kelas'] . ')';
-                            }
-                            echo sanitize($label);
-                        } else {
-                            echo 'Belum terdaftar di kelas mana pun';
-                        }
-                        ?>
-                    </dd>
-                </div>
-                <div>
-                    <dt style="font-weight:600;color:#4b5563;">Jumlah Kelas Diikuti</dt>
-                    <dd style="margin:0;color:#111827;"><?php echo (int)$stats['class_count']; ?> kelas</dd>
-                </div>
-            </dl>
+            <dl class="info-list">
+                <dt>Tipe Akun</dt>
+                <dd>Murid / Siswa</dd>
 
-            <!-- Tombol akun di dalam kartu juga, biar jelas -->
-            <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
-                <a href="<?php echo $baseUrl; ?>/account/change_password_user.php"
-                   class="btn btn-secondary">
-                    Ganti password
-                </a>
-                <a href="<?php echo $baseUrl; ?>/auth/logout.php"
-                   class="btn btn-outline"
-                   style="border:1px solid #e5e7eb;background:#ffffff;"
-                   onclick="return confirm('Yakin ingin keluar dari akun?');">
-                    Keluar dari akun
-                </a>
-            </div>
+                <dt>Nama</dt>
+                <dd><?php echo sanitize($user['nama'] ?: '-'); ?></dd>
+
+                <dt>Email</dt>
+                <dd><?php echo sanitize($user['email']); ?></dd>
+
+                <dt>Kelas Utama</dt>
+                <dd>
+                    <?php
+                    if ($primaryClass) {
+                        $label = trim(($primaryClass['level'] ?? '') . ' ' . ($primaryClass['jurusan'] ?? ''));
+                        if (!empty($primaryClass['nama_kelas']) &&
+                            trim($primaryClass['nama_kelas']) !== trim($label)) {
+                            $label .= ' (' . $primaryClass['nama_kelas'] . ')';
+                        }
+                        echo sanitize($label);
+                    } else {
+                        echo 'Belum terdaftar di kelas mana pun';
+                    }
+                    ?>
+                </dd>
+
+                <dt>Jumlah Kelas Diikuti</dt>
+                <dd><?php echo (int)$stats['class_count']; ?> kelas</dd>
+            </dl>
         </div>
 
-        <!-- Kartu ringkasan angka -->
+        <!-- Ringkasan tugas -->
         <div class="card" style="border-radius:14px;">
-            <h2 style="margin-top:0;margin-bottom:10px;font-size:1.1rem;">Ringkasan Belajar</h2>
+            <h2 style="margin-top:0;margin-bottom:10px;font-size:1.1rem;">Ringkasan Tugas</h2>
             <div style="display:flex;flex-wrap:wrap;gap:12px;">
-                <div style="flex:1 1 120px;padding:10px 12px;border-radius:12px;border:1px solid #e5e7eb;background:#f9fafb;">
+                <div style="flex:1 1 150px;padding:10px 12px;border-radius:12px;border:1px solid #e5e7eb;background:#f9fafb;">
                     <div style="font-size:0.8rem;color:#6b7280;">Tugas aktif</div>
-                    <div style="font-size:1.3rem;font-weight:700;margin-top:2px;">
+                    <div style="font-size:1.4rem;font-weight:700;margin-top:2px;">
                         <?php echo (int)$stats['assign_active']; ?>
                     </div>
-                    <div style="font-size:0.8rem;color:#6b7280;margin-top:2px;">Belum lewat deadline</div>
+                    <div style="font-size:0.8rem;color:#6b7280;margin-top:2px;">
+                        Deadline belum lewat / tidak diatur.
+                    </div>
                 </div>
-                <div style="flex:1 1 120px;padding:10px 12px;border-radius:12px;border:1px solid #e5e7eb;background:#f9fafb;">
+                <div style="flex:1 1 150px;padding:10px 12px;border-radius:12px;border:1px solid #e5e7eb;background:#f9fafb;">
                     <div style="font-size:0.8rem;color:#6b7280;">Total tugas</div>
-                    <div style="font-size:1.3rem;font-weight:700;margin-top:2px;">
+                    <div style="font-size:1.4rem;font-weight:700;margin-top:2px;">
                         <?php echo (int)$stats['assign_total']; ?>
                     </div>
-                    <div style="font-size:0.8rem;color:#6b7280;margin-top:2px;">Semua tugas di kelas Anda</div>
+                    <div style="font-size:0.8rem;color:#6b7280;margin-top:2px;">
+                        Semua tugas yang ditugaskan ke kelas kamu.
+                    </div>
                 </div>
             </div>
+            <div style="margin-top:10px;">
+                <a href="<?php echo $baseUrl; ?>/assignments/list.php"
+                   class="btn btn-primary btn-small">
+                    Buka daftar tugas
+                </a>
+            </div>
         </div>
+
     </div>
 
-    <!-- Baris bawah: tugas mendatang + aksi cepat -->
-    <div style="display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:16px;margin-top:18px;">
+    <!-- GRID BAWAH: Tugas mendatang + Aksi cepat -->
+    <div class="student-grid-bottom">
 
         <!-- Tugas mendatang -->
         <div class="card" style="border-radius:14px;">
-            <h2 style="margin-top:0;margin-bottom:8px;font-size:1.05rem;">Tugas mendatang</h2>
+            <h2 style="margin-top:0;margin-bottom:8px;font-size:1.05rem;">Tugas Mendatang</h2>
             <?php if (empty($upcomingAssignments)): ?>
                 <p style="margin:4px 0 0 0;font-size:0.9rem;color:#6b7280;">
                     Belum ada tugas yang tercatat untuk kelas Anda.
                 </p>
             <?php else: ?>
-                <ul style="list-style:none;margin:0;padding:0;font-size:0.9rem;">
+                <ul style="list-style:none;margin:0;padding:0;">
                     <?php foreach ($upcomingAssignments as $a): ?>
-                        <li style="padding:8px 0;border-bottom:1px solid #e5e7eb;">
-                            <div style="font-weight:600;color:#111827;">
+                        <li class="task-item">
+                            <div class="task-title">
                                 <?php echo sanitize($a['judul']); ?>
                             </div>
-                            <div style="color:#6b7280;">
+                            <div class="task-meta">
                                 <?php
                                     $kelasStr  = trim(($a['level'] ?? '') . ' ' . ($a['jurusan'] ?? ''));
                                     $kelasNama = $kelasStr ?: ($a['nama_kelas'] ?? '');
@@ -310,7 +401,7 @@ include __DIR__ . '/../inc/header.php';
                                     echo sanitize($mapel . ($mapel && $kelasNama ? ' • ' : '') . $kelasNama);
                                 ?>
                             </div>
-                            <div style="color:#6b7280;font-size:0.85rem;margin-top:2px;">
+                            <div class="task-meta" style="margin-top:2px;">
                                 Deadline:
                                 <?php
                                     $deadline = $a['deadline'] ?? null;
@@ -321,8 +412,7 @@ include __DIR__ . '/../inc/header.php';
                             </div>
                             <div style="margin-top:6px;">
                                 <a href="<?php echo $baseUrl; ?>/assignments/view.php?id=<?php echo (int)$a['id']; ?>"
-                                   class="btn btn-secondary"
-                                   style="padding:4px 10px;font-size:0.82rem;">
+                                   class="btn btn-secondary btn-small">
                                     Lihat detail tugas
                                 </a>
                             </div>
@@ -331,79 +421,80 @@ include __DIR__ . '/../inc/header.php';
                 </ul>
                 <div style="margin-top:10px;">
                     <a href="<?php echo $baseUrl; ?>/assignments/list.php"
-                       class="btn btn-primary"
-                       style="padding:6px 14px;font-size:0.85rem;">
+                       class="btn btn-outline btn-small">
                         Lihat semua tugas
                     </a>
                 </div>
             <?php endif; ?>
         </div>
 
-        <!-- Aksi cepat -->
+        <!-- Aksi cepat (semua jadi tombol jelas) -->
         <div class="card" style="border-radius:14px;">
-            <h2 style="margin-top:0;margin-bottom:6px;font-size:1.05rem;">Aksi cepat</h2>
+            <h2 style="margin-top:0;margin-bottom:6px;font-size:1.05rem;">Aksi Cepat</h2>
             <p style="margin:0 0 10px 0;font-size:0.88rem;color:#6b7280;">
-                Pilih menu berikut untuk langsung menuju halaman yang sering dipakai.
+                Pilih menu di bawah ini. Setiap tombol membawa kamu langsung ke halaman terkait.
             </p>
 
             <div style="display:grid;grid-template-columns:1fr;gap:10px;font-size:0.9rem;">
 
                 <div>
-                    <strong>Tugas & Materi</strong>
-                    <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">
-                        <a href="<?php echo $baseUrl; ?>/assignments/list.php"
-                           class="btn btn-secondary"
-                           style="padding:6px 12px;font-size:0.85rem;">
-                            Buka daftar tugas
+                    <div class="quick-section-title">Belajar & Catatan Pribadi</div>
+                    <div class="quick-button-row">
+                        <a href="<?php echo $baseUrl; ?>/space_belajar/dashboard.php"
+                           class="btn btn-primary btn-small">
+                            Buka Space Belajar
                         </a>
-                        <a href="<?php echo $baseUrl; ?>/materials/list.php"
-                           class="btn btn-secondary"
-                           style="padding:6px 12px;font-size:0.85rem;">
-                            Lihat materi pelajaran
+                        <a href="<?php echo $baseUrl; ?>/study/calendar.php"
+                           class="btn btn-secondary btn-small">
+                            Kalender Belajar
                         </a>
                     </div>
                 </div>
 
                 <div>
-                    <strong>Kelas & Mapel</strong>
-                    <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">
-                        <a href="<?php echo $baseUrl; ?>/classes/list.php"
-                           class="btn btn-secondary"
-                           style="padding:6px 12px;font-size:0.85rem;">
-                            Daftar kelas di sekolah
+                    <div class="quick-section-title">Tugas & Materi</div>
+                    <div class="quick-button-row">
+                        <a href="<?php echo $baseUrl; ?>/assignments/list.php"
+                           class="btn btn-secondary btn-small">
+                            Daftar tugas
                         </a>
-                        <a href"<?php echo $baseUrl; ?>/subjects/list.php"
-                           class="btn btn-secondary"
-                           style="padding:6px 12px;font-size:0.85rem;">
+                        <a href="<?php echo $baseUrl; ?>/materials/list.php"
+                           class="btn btn-secondary btn-small">
+                            Materi pelajaran
+                        </a>
+                    </div>
+                </div>
+
+                <div>
+                    <div class="quick-section-title">Kelas & Mapel</div>
+                    <div class="quick-button-row">
+                        <a href="<?php echo $baseUrl; ?>/classes/list.php"
+                           class="btn btn-secondary btn-small">
+                            Daftar kelas
+                        </a>
+                        <a href="<?php echo $baseUrl; ?>/subjects/list.php"
+                           class="btn btn-secondary btn-small">
                             Daftar mata pelajaran
                         </a>
                     </div>
                 </div>
 
                 <div>
-                    <strong>Absensi</strong>
-                    <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">
+                    <div class="quick-section-title">Absensi</div>
+                    <div class="quick-button-row">
                         <a href="<?php echo $baseUrl; ?>/attendance/my_history.php"
-                           class="btn btn-secondary"
-                           style="padding:6px 12px;font-size:0.85rem;">
+                           class="btn btn-secondary btn-small">
                             Riwayat absensi saya
                         </a>
                     </div>
                 </div>
 
                 <div>
-                    <strong>Akun</strong>
-                    <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">
+                    <div class="quick-section-title">Akun</div>
+                    <div class="quick-button-row">
                         <a href="<?php echo $baseUrl; ?>/account/change_password_user.php"
-                           class="btn btn-secondary"
-                           style="padding:6px 12px;font-size:0.85rem;">
+                           class="btn btn-secondary btn-small">
                             Ganti password / pengaturan
-                        </a>
-                        <a href="<?php echo $baseUrl; ?>/auth/logout.php"
-                           class="btn btn-primary"
-                           style="padding:6px 12px;font-size:0.85rem;"
-                           onclick="return confirm('Yakin ingin keluar dari akun ini?');">
-                            Keluar dari sistem
                         </a>
                     </div>
                 </div>

@@ -7,15 +7,15 @@ require_once __DIR__ . '/../inc/helpers.php';
 requireRole(['admin']);
 
 $db       = getDB();
-$schoolId = (int)getCurrentSchoolId();
+$schoolId = (int) getCurrentSchoolId();
 $baseUrl  = rtrim(BASE_URL, '/\\');
 
-// helper singkat untuk ambil 1 angka
+// helper singkat ambil 1 angka
 function getCount($db, $sql) {
     $res = $db->query($sql);
     if ($res) {
         $row = $res->fetch_row();
-        return (int)($row[0] ?? 0);
+        return (int) ($row[0] ?? 0);
     }
     return 0;
 }
@@ -38,39 +38,53 @@ $quality = [
 ];
 
 if ($schoolId > 0) {
-    // Users
-    $counts['users'] = getCount($db, "SELECT COUNT(*) FROM users WHERE school_id = {$schoolId}");
-    $counts['guru']  = getCount($db, "SELECT COUNT(*) FROM users WHERE role = 'guru' AND school_id = {$schoolId}");
-    $counts['siswa'] = getCount(
-        $db,
+    // Users (selalu pakai school_id di users)
+    $counts['users'] = getCount($db,
+        "SELECT COUNT(*) FROM users WHERE school_id = {$schoolId}"
+    );
+    $counts['guru']  = getCount($db,
+        "SELECT COUNT(*) FROM users WHERE role = 'guru' AND school_id = {$schoolId}"
+    );
+    $counts['siswa'] = getCount($db,
         "SELECT COUNT(*) FROM users 
          WHERE (role = 'siswa' OR role = 'murid') AND school_id = {$schoolId}"
     );
 
-    // Kelas & Mapel
-    $counts['classes']  = getCount($db, "SELECT COUNT(*) FROM classes  WHERE school_id = {$schoolId}");
-    $counts['subjects'] = getCount($db, "SELECT COUNT(*) FROM subjects WHERE school_id = {$schoolId}");
+    // Kelas & Mapel (sudah punya school_id sendiri)
+    $counts['classes']  = getCount($db,
+        "SELECT COUNT(*) FROM classes WHERE school_id = {$schoolId}"
+    );
+    $counts['subjects'] = getCount($db,
+        "SELECT COUNT(*) FROM subjects WHERE school_id = {$schoolId}"
+    );
 
-    // Aktivitas belajar (masih global jika tabel belum punya school_id)
-    $counts['materials']     = getCount($db, "SELECT COUNT(*) FROM materials");
-    $counts['assignments']   = getCount($db, "SELECT COUNT(*) FROM assignments");
-    $counts['notifications'] = getCount($db, "SELECT COUNT(*) FROM notifications");
+    // Aktivitas belajar: sekarang sudah di-scope per sekolah
+    $counts['materials'] = getCount($db,
+        "SELECT COUNT(*) FROM materials WHERE school_id = {$schoolId}"
+    );
+    $counts['assignments'] = getCount($db,
+        "SELECT COUNT(*) FROM assignments WHERE school_id = {$schoolId}"
+    );
+    $counts['notifications'] = getCount($db,
+        "SELECT COUNT(*) FROM notifications WHERE school_id = {$schoolId}"
+    );
 
-    // -------------------- KUALITAS DATA (opsional tapi berguna) -------------------- //
+    // -------------------- KUALITAS DATA -------------------- //
     // Guru yang belum tercatat sebagai wali / pengampu kelas
-    $quality['guru_no_class'] = getCount(
-        $db,
+    $quality['guru_no_class'] = getCount($db,
         "SELECT COUNT(*) FROM users u
          WHERE u.role = 'guru'
            AND u.school_id = {$schoolId}
            AND u.id NOT IN (
-               SELECT DISTINCT guru_id FROM classes WHERE school_id = {$schoolId} AND guru_id IS NOT NULL
+               SELECT DISTINCT guru_id
+               FROM classes
+               WHERE school_id = {$schoolId}
+                 AND guru_id IS NOT NULL
            )"
     );
 
     // Murid yang belum punya kelas (tidak di class_user dan users.class_id kosong)
-    $quality['murid_no_class'] = getCount(
-        $db,
+    $quality['murid_no_class'] = getCount($db,
         "SELECT COUNT(*) FROM users u
          WHERE (u.role = 'murid' OR u.role = 'siswa')
            AND u.school_id = {$schoolId}
@@ -95,9 +109,9 @@ $school = [
 
 if ($schoolId > 0) {
     $stmt = $db->prepare("
-        SELECT nama_sekolah, alamat, created_at 
-        FROM schools 
-        WHERE id = ? 
+        SELECT nama_sekolah, alamat, created_at
+        FROM schools
+        WHERE id = ?
         LIMIT 1
     ");
     if ($stmt) {
@@ -114,7 +128,7 @@ if ($schoolId > 0) {
     }
 }
 
-// -------------------- DATA TERBARU (untuk context) -------------------- //
+// -------------------- DATA TERBARU (per sekolah) -------------------- //
 $latestUsers   = [];
 $latestClasses = [];
 
@@ -137,7 +151,7 @@ if ($schoolId > 0) {
         $stmt->close();
     }
 
-    // 5 kelas terakhir
+    // 5 kelas terakhir di sekolah ini
     $stmt = $db->prepare("
         SELECT id, nama_kelas, level, jurusan, created_at
         FROM classes
@@ -168,7 +182,7 @@ include __DIR__ . '/../inc/header.php';
             <h1 style="margin:0 0 4px 0;">Dashboard Admin</h1>
             <p style="margin:0;font-size:0.9rem;color:#6b7280;">
                 Pusat kontrol untuk mengelola <strong>akun sekolah</strong>,
-                <strong>guru & murid</strong>, serta <strong>struktur kelas</strong>.
+                <strong>guru &amp; murid</strong>, serta <strong>struktur kelas</strong>.
             </p>
         </div>
 
@@ -199,18 +213,18 @@ include __DIR__ . '/../inc/header.php';
                 <div style="margin-bottom:4px;">
                     <dt style="font-weight:600;display:inline;">Total pengguna:</dt>
                     <dd style="display:inline;margin:0;">
-                        <?php echo (int)$counts['users']; ?>
-                        (Guru: <?php echo (int)$counts['guru']; ?>,
-                        Murid: <?php echo (int)$counts['siswa']; ?>)
+                        <?php echo (int) $counts['users']; ?>
+                        (Guru: <?php echo (int) $counts['guru']; ?>,
+                        Murid: <?php echo (int) $counts['siswa']; ?>)
                     </dd>
                 </div>
                 <div style="margin-bottom:4px;">
                     <dt style="font-weight:600;display:inline;">Kelas terdaftar:</dt>
-                    <dd style="display:inline;margin:0;"><?php echo (int)$counts['classes']; ?></dd>
+                    <dd style="display:inline;margin:0;"><?php echo (int) $counts['classes']; ?></dd>
                 </div>
                 <div style="margin-bottom:4px;">
                     <dt style="font-weight:600;display:inline;">Mata pelajaran:</dt>
-                    <dd style="display:inline;margin:0;"><?php echo (int)$counts['subjects']; ?></dd>
+                    <dd style="display:inline;margin:0;"><?php echo (int) $counts['subjects']; ?></dd>
                 </div>
                 <?php if (!empty($school['created_at'])): ?>
                     <div style="margin-top:4px;">
@@ -233,7 +247,7 @@ include __DIR__ . '/../inc/header.php';
 
             <ul style="margin:0 0 10px 18px;padding:0;font-size:0.84rem;color:#6b7280;">
                 <li>Mengelola guru dan murid di sekolah ini</li>
-                <li>Mengatur struktur kelas & mata pelajaran</li>
+                <li>Mengatur struktur kelas &amp; mata pelajaran</li>
                 <li>Menjaga keamanan akun dan data sekolah</li>
             </ul>
 
@@ -248,15 +262,15 @@ include __DIR__ . '/../inc/header.php';
         </div>
     </div>
 
-    <!-- STATISTIK GRID: Pengguna, Kelas, Mapel, Aktivitas belajar -->
+    <!-- STATISTIK GRID -->
     <div style="display:grid;grid-template-columns: repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:18px;">
 
         <div class="card" style="border-radius:14px;">
             <h3 style="margin-top:0;">Pengguna</h3>
-            <p style="font-size:28px;margin:8px 0;"><?php echo (int)$counts['users']; ?></p>
+            <p style="font-size:28px;margin:8px 0;"><?php echo (int) $counts['users']; ?></p>
             <div class="small text-muted">
-                Guru: <?php echo (int)$counts['guru']; ?> ·
-                Murid: <?php echo (int)$counts['siswa']; ?>
+                Guru: <?php echo (int) $counts['guru']; ?> ·
+                Murid: <?php echo (int) $counts['siswa']; ?>
             </div>
             <div style="margin-top:10px;">
                 <a href="<?php echo $baseUrl; ?>/users/list.php">Kelola pengguna →</a>
@@ -265,8 +279,8 @@ include __DIR__ . '/../inc/header.php';
 
         <div class="card" style="border-radius:14px;">
             <h3 style="margin-top:0;">Kelas</h3>
-            <p style="font-size:28px;margin:8px 0;"><?php echo (int)$counts['classes']; ?></p>
-            <div class="small text-muted">Struktur rombel & wali kelas.</div>
+            <p style="font-size:28px;margin:8px 0;"><?php echo (int) $counts['classes']; ?></p>
+            <div class="small text-muted">Struktur rombel &amp; wali kelas.</div>
             <div style="margin-top:10px;">
                 <a href="<?php echo $baseUrl; ?>/classes/list.php">Kelola kelas →</a>
             </div>
@@ -274,7 +288,7 @@ include __DIR__ . '/../inc/header.php';
 
         <div class="card" style="border-radius:14px;">
             <h3 style="margin-top:0;">Mata pelajaran</h3>
-            <p style="font-size:28px;margin:8px 0;"><?php echo (int)$counts['subjects']; ?></p>
+            <p style="font-size:28px;margin:8px 0;"><?php echo (int) $counts['subjects']; ?></p>
             <div class="small text-muted">Mapel yang digunakan di sekolah.</div>
             <div style="margin-top:10px;">
                 <a href="<?php echo $baseUrl; ?>/subjects/list.php">Kelola mapel →</a>
@@ -284,12 +298,12 @@ include __DIR__ . '/../inc/header.php';
         <div class="card" style="border-radius:14px;">
             <h3 style="margin-top:0;">Ringkasan aktivitas</h3>
             <p style="margin:6px 0 0 0;font-size:0.86rem;color:#6b7280;">
-                Untuk memantau seberapa aktif guru & murid menggunakan sistem.
+                Untuk memantau seberapa aktif guru &amp; murid menggunakan sistem.
             </p>
             <ul style="margin:8px 0 0 18px;padding:0;font-size:0.84rem;color:#4b5563;">
-                <li>Materi terunggah: <strong><?php echo (int)$counts['materials']; ?></strong></li>
-                <li>Tugas tercatat: <strong><?php echo (int)$counts['assignments']; ?></strong></li>
-                <li>Notifikasi terkirim: <strong><?php echo (int)$counts['notifications']; ?></strong></li>
+                <li>Materi terunggah: <strong><?php echo (int) $counts['materials']; ?></strong></li>
+                <li>Tugas tercatat: <strong><?php echo (int) $counts['assignments']; ?></strong></li>
+                <li>Notifikasi terkirim: <strong><?php echo (int) $counts['notifications']; ?></strong></li>
             </ul>
         </div>
     </div>
@@ -306,14 +320,14 @@ include __DIR__ . '/../inc/header.php';
 
             <ul style="margin:0 0 4px 18px;padding:0;font-size:0.88rem;color:#111827;">
                 <li>
-                    <strong><?php echo (int)$quality['guru_no_class']; ?></strong>
+                    <strong><?php echo (int) $quality['guru_no_class']; ?></strong>
                     guru belum terhubung ke kelas mana pun.
                     <br><span style="font-size:0.8rem;color:#6b7280;">
                         Solusi: atur mereka sebagai wali/pengampu di menu Kelas.
                     </span>
                 </li>
                 <li style="margin-top:6px;">
-                    <strong><?php echo (int)$quality['murid_no_class']; ?></strong>
+                    <strong><?php echo (int) $quality['murid_no_class']; ?></strong>
                     murid belum punya kelas.
                     <br><span style="font-size:0.8rem;color:#6b7280;">
                         Solusi: masukkan murid tersebut ke rombel melalui menu Kelas / Pengguna.
@@ -337,7 +351,8 @@ include __DIR__ . '/../inc/header.php';
                                 <li>
                                     <?php echo sanitize($u['nama'] ?: $u['email']); ?>
                                     <br><span style="font-size:0.78rem;color:#6b7280;">
-                                        <?php echo strtoupper(sanitize($u['role'])); ?> • <?php echo sanitize($u['created_at']); ?>
+                                        <?php echo strtoupper(sanitize($u['role'])); ?>
+                                        • <?php echo sanitize($u['created_at']); ?>
                                     </span>
                                 </li>
                             <?php endforeach; ?>
@@ -391,7 +406,7 @@ include __DIR__ . '/../inc/header.php';
             </div>
 
             <div>
-                <strong>Struktur kelas & mapel</strong>
+                <strong>Struktur kelas &amp; mapel</strong>
                 <ul style="margin:4px 0 0 18px;padding:0;font-size:0.86rem;">
                     <li><a href="<?php echo $baseUrl; ?>/classes/create.php">Buat kelas baru</a></li>
                     <li><a href="<?php echo $baseUrl; ?>/classes/import_excel.php">Import kelas dari CSV</a></li>
@@ -408,7 +423,7 @@ include __DIR__ . '/../inc/header.php';
             </div>
 
             <div>
-                <strong>Keamanan & akun</strong>
+                <strong>Keamanan &amp; akun</strong>
                 <ul style="margin:4px 0 0 18px;padding:0;font-size:0.86rem;">
                     <li><a href="<?php echo $baseUrl; ?>/account/change_password_admin.php">Ganti email / password admin</a></li>
                     <li><a href="<?php echo $baseUrl; ?>/auth/logout.php">Keluar dari sistem</a></li>

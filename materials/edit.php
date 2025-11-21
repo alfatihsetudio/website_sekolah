@@ -1,12 +1,12 @@
 <?php
-// materials/edit.php (update: robust delete_file + delete_material moved to header)
+// materials/edit.php
 require_once __DIR__ . '/../inc/auth.php';
 require_once __DIR__ . '/../inc/db.php';
 require_once __DIR__ . '/../inc/helpers.php';
 
 requireRole(['guru']);
 
-$db = getDB();
+$db     = getDB();
 $userId = (int)($_SESSION['user_id'] ?? 0);
 
 $id = (int)($_GET['id'] ?? 0);
@@ -15,221 +15,304 @@ if ($id <= 0) {
     exit;
 }
 
-// load material and verify ownership
-$stmt = $db->prepare("SELECT m.*, s.nama_mapel, s.class_id FROM materials m LEFT JOIN subjects s ON m.subject_id = s.id WHERE m.id = ? AND m.created_by = ? LIMIT 1");
-if (!$stmt) { echo "DB error: " . sanitize($db->error); exit; }
+// Ambil materi + mapel, pastikan milik guru ini
+$stmt = $db->prepare("
+    SELECT m.*, s.nama_mapel, s.class_id
+    FROM materials m
+    LEFT JOIN subjects s ON m.subject_id = s.id
+    WHERE m.id = ? AND m.created_by = ?
+    LIMIT 1
+");
+if (!$stmt) {
+    echo "DB error: " . sanitize($db->error);
+    exit;
+}
 $stmt->bind_param("ii", $id, $userId);
 $stmt->execute();
 $res = $stmt->get_result();
-$m = $res ? $res->fetch_assoc() : null;
+$m   = $res ? $res->fetch_assoc() : null;
 $stmt->close();
 
-if (!$m) { http_response_code(403); echo "Forbidden"; exit; }
-
-// detect files table & cols
-function detectFilesTableAndCols($db) {
-    $candidates = ['files','file_uploads','fileuploads','uploads'];
-    foreach ($candidates as $t) {
-        $r = $db->query("SHOW TABLES LIKE '" . $db->real_escape_string($t) . "'");
-        if ($r && $r->num_rows > 0) {
-            $cols = [];
-            $res = $db->query("SHOW COLUMNS FROM `{$t}`");
-            if ($res) {
-                while ($row = $res->fetch_assoc()) $cols[] = $row['Field'];
-            }
-            return ['table' => $t, 'cols' => $cols];
-        }
-    }
-    return null;
+if (!$m) {
+    http_response_code(403);
+    echo "Forbidden";
+    exit;
 }
-$filesMeta = detectFilesTableAndCols($db);
 
-// load current file info (similar logic as before)
+// Ambil info file dari tabel file_uploads (bukan 'files')
 $currentFile = null;
-if (!empty($m['file_id']) && is_numeric($m['file_id']) && $filesMeta) {
+if (!empty($m['file_id']) && is_numeric($m['file_id'])) {
     $fid = (int)$m['file_id'];
-    $t = $filesMeta['table'];
-    $cols = $filesMeta['cols'];
-    $selectCols = [];
-    foreach (['original_name','filename','file_name','name'] as $c) if (in_array($c,$cols,true)) $selectCols[] = $c;
-    foreach (['path','filepath','file_path','url'] as $c) if (in_array($c,$cols,true)) $selectCols[] = $c;
-    if (empty($selectCols)) $selectCols = ['*'];
-    $sel = implode(',', $selectCols);
-    $q = $db->prepare("SELECT {$sel} FROM `{$t}` WHERE id = ? LIMIT 1");
+    $q   = $db->prepare("
+        SELECT id, original_name, stored_name, file_path, mime_type, file_size
+        FROM file_uploads
+        WHERE id = ?
+        LIMIT 1
+    ");
     if ($q) {
         $q->bind_param("i", $fid);
         $q->execute();
-        $rf = $q->get_result();
-        $rrow = $rf ? $rf->fetch_assoc() : null;
+        $rf   = $q->get_result();
+        $rowF = $rf ? $rf->fetch_assoc() : null;
         $q->close();
-        if ($rrow) {
-            $original = null; $physical = null; $path = null;
-            foreach (['original_name','filename','file_name','name'] as $c) {
-                if (isset($rrow[$c]) && trim($rrow[$c]) !== '') {
-                    $original = $rrow[$c];
-                    if ($physical === null && preg_match('/^[0-9a-f]{6,}_/i', $rrow[$c])) $physical = $rrow[$c];
-                }
-            }
-            foreach (['path','filepath','file_path','url'] as $c) {
-                if (isset($rrow[$c]) && trim($rrow[$c]) !== '') {
-                    $path = $rrow[$c];
-                    $bn = basename($rrow[$c]);
-                    if ($physical === null && $bn !== '') $physical = $bn;
-                }
-            }
-            if ($physical === null) {
-                foreach (['filename','file_name','name'] as $c) {
-                    if (isset($rrow[$c]) && trim($rrow[$c]) !== '') { $physical = $rrow[$c]; break; }
-                }
-            }
-            $currentFile = [
-                'original_name' => $original ?? ('file_'.$fid),
-                'physical' => $physical ?? null,
-                'path' => $path ?? null,
-                'raw' => $rrow,
-                'id' => $fid
-            ];
+
+        if ($rowF) {
+            $currentFile = $rowF; // id, original_name, stored_name, file_path, mime_type, file_size
         }
     }
 }
 
-// ACTIONS: save, delete_file, delete_material
-$error = ''; $success = '';
+$error   = '';
+$success = '';
 
+/**
+ * Simpan file ke /uploads/materials dan catat ke file_uploads.
+ * Return: ['success' => bool, 'file_id' => int|null, 'message' => string]
+ */
+function handleMaterialUpload(array $file, int $uploaderId, mysqli $db): array
+{
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        return [
+            'success' => false,
+            'file_id' => null,
+            'message' => 'Error upload file (code ' . (int)$file['error'] . ').'
+        ];
+    }
+
+    $uploadsRoot = realpath(__DIR__ . '/../uploads');
+    if ($uploadsRoot === false) {
+        // coba buat folder uploads kalau belum ada
+        $base = __DIR__ . '/../uploads';
+        if (!is_dir($base) && !mkdir($base, 0775, true)) {
+            return [
+                'success' => false,
+                'file_id' => null,
+                'message' => 'Folder uploads tidak tersedia.'
+            ];
+        }
+        $uploadsRoot = realpath($base);
+        if ($uploadsRoot === false) {
+            return [
+                'success' => false,
+                'file_id' => null,
+                'message' => 'Gagal inisialisasi folder uploads.'
+            ];
+        }
+    }
+
+    $targetDir = $uploadsRoot . DIRECTORY_SEPARATOR . 'materials';
+    if (!is_dir($targetDir) && !mkdir($targetDir, 0775, true)) {
+        return [
+            'success' => false,
+            'file_id' => null,
+            'message' => 'Gagal membuat folder materials.'
+        ];
+    }
+
+    $originalName = $file['name'] ?? 'file';
+    $originalName = trim($originalName);
+
+    $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+    $allowedExt = ['pdf','doc','docx','jpg','jpeg','png','zip','webp'];
+    if ($ext && !in_array($ext, $allowedExt, true)) {
+        return [
+            'success' => false,
+            'file_id' => null,
+            'message' => 'Tipe file tidak diizinkan.'
+        ];
+    }
+
+    // nama file random yang rapi, mirip pola di DB
+    $rand       = bin2hex(random_bytes(8));
+    $safeBase   = preg_replace('/[^A-Za-z0-9_\-]/', '_', pathinfo($originalName, PATHINFO_FILENAME));
+    $storedName = $rand . '_' . $safeBase . ($ext ? '.' . $ext : '');
+
+    $relativePath = 'materials/' . $storedName; // disimpan ke kolom file_path
+    $fullPath     = $targetDir . DIRECTORY_SEPARATOR . $storedName;
+
+    if (!move_uploaded_file($file['tmp_name'], $fullPath)) {
+        return [
+            'success' => false,
+            'file_id' => null,
+            'message' => 'Gagal memindahkan file upload.'
+        ];
+    }
+
+    $mime     = $file['type'] ?? '';
+    $fileSize = (int)($file['size'] ?? 0);
+
+    $stmt = $db->prepare("
+        INSERT INTO file_uploads (original_name, stored_name, file_path, mime_type, file_size, uploader_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ");
+    if (!$stmt) {
+        return [
+            'success' => false,
+            'file_id' => null,
+            'message' => 'DB error saat menyimpan file.'
+        ];
+    }
+    $stmt->bind_param("sssisi", $originalName, $storedName, $relativePath, $mime, $fileSize, $uploaderId);
+    if (!$stmt->execute()) {
+        $msg = 'DB error: ' . $stmt->error;
+        $stmt->close();
+        return [
+            'success' => false,
+            'file_id' => null,
+            'message' => $msg
+        ];
+    }
+    $newId = (int)$stmt->insert_id;
+    $stmt->close();
+
+    return [
+        'success' => true,
+        'file_id' => $newId,
+        'message' => 'Upload berhasil.'
+    ];
+}
+
+// POST handler
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $token = $_POST['csrf_token'] ?? '';
     if (!verifyCsrfToken($token, 'edit_material_' . $id)) {
         $error = 'Token tidak valid.';
     } else {
         $action = $_POST['action'] ?? 'save';
+
+        // ---- SIMPAN PERUBAHAN ----
         if ($action === 'save') {
-            $judul = trim($_POST['judul'] ?? '');
+            $judul  = trim($_POST['judul'] ?? '');
             $konten = trim($_POST['konten'] ?? '');
+
             $videoLink = trim($_POST['video_link'] ?? '');
-            if ($judul === '') $error = 'Judul wajib.';
-            // handle upload similar to before
-            $newFileId = null;
+            if ($videoLink === '' || $videoLink === '0') {
+                $videoLink = null;   // benar-benar opsional
+            }
+
+            if ($judul === '') {
+                $error = 'Judul wajib diisi.';
+            }
+
+            $newFileId   = null;
+            $newFilePath = null;
+
+            // Upload file baru jika dipilih (opsional)
             if (isset($_FILES['file']) && $_FILES['file']['error'] !== UPLOAD_ERR_NO_FILE) {
-                if ($_FILES['file']['error'] === UPLOAD_ERR_OK) {
-                    $uploadResult = uploadFile($_FILES['file'], 'materials/');
-                    if (!empty($uploadResult) && !empty($uploadResult['success']) && !empty($uploadResult['file_id'])) {
-                        $newFileId = (int)$uploadResult['file_id'];
-                    } else {
-                        $error = $uploadResult['message'] ?? 'Gagal mengunggah file.';
-                    }
+                $up = handleMaterialUpload($_FILES['file'], $userId, $db);
+                if (!$up['success']) {
+                    $error = $up['message'];
                 } else {
-                    $error = 'Error upload file (code ' . (int)$_FILES['file']['error'] . ').';
+                    $newFileId   = (int)$up['file_id'];
+                    // Sesuai handleMaterialUpload, relative path selalu "materials/xxx"
+                    $newFilePath = 'materials/' . basename($_FILES['file']['name']); // placeholder, tapi kita sebenarnya tidak butuh kolom ini
                 }
             }
-            if (empty($error)) {
+
+            if ($error === '') {
                 if ($newFileId) {
-                    $stmt2 = $db->prepare("UPDATE materials SET judul = ?, konten = ?, video_link = ?, file_id = ?, updated_at = NOW() WHERE id = ?");
+                    // update judul/konten/video + file_id
+                    $stmt2 = $db->prepare("
+                        UPDATE materials
+                        SET judul = ?, konten = ?, video_link = ?, file_id = ?, updated_at = NOW()
+                        WHERE id = ?
+                    ");
                     $stmt2->bind_param("sssii", $judul, $konten, $videoLink, $newFileId, $id);
                 } else {
-                    $stmt2 = $db->prepare("UPDATE materials SET judul = ?, konten = ?, video_link = ?, updated_at = NOW() WHERE id = ?");
+                    $stmt2 = $db->prepare("
+                        UPDATE materials
+                        SET judul = ?, konten = ?, video_link = ?, updated_at = NOW()
+                        WHERE id = ?
+                    ");
                     $stmt2->bind_param("sssi", $judul, $konten, $videoLink, $id);
                 }
+
                 if ($stmt2->execute()) {
-                    $success = 'Perubahan tersimpan.';
-                    if ($newFileId) {
-                        header('Location: ' . BASE_URL . '/materials/edit.php?id=' . $id);
-                        exit;
-                    }
+                    $stmt2->close();
+                    header('Location: ' . BASE_URL . '/materials/edit.php?id=' . $id);
+                    exit;
                 } else {
                     $error = 'Gagal menyimpan: ' . sanitize($stmt2->error);
+                    $stmt2->close();
                 }
-                $stmt2->close();
             }
+
+        // ---- HAPUS FILE LAMPIRAN SAJA ----
         } elseif ($action === 'delete_file') {
-            // delete file logic: only if currentFile exists
             if (!$currentFile || empty($currentFile['id'])) {
                 $error = 'Tidak ada file untuk dihapus.';
             } else {
                 $fid = (int)$currentFile['id'];
-                // try determine physical filename robustly
-                $physical = $currentFile['physical'] ?? null;
-                if (empty($physical) && !empty($currentFile['path'])) $physical = basename($currentFile['path']);
-                // If still empty, attempt to fetch filename from DB raw fields
-                if (empty($physical) && !empty($currentFile['raw'])) {
-                    foreach (['filename','file_name','name','original_name'] as $c) {
-                        if (!empty($currentFile['raw'][$c])) { $physical = $currentFile['raw'][$c]; break; }
-                    }
-                }
 
-                // Start transaction
                 $db->begin_transaction();
-                $unlinkError = '';
                 try {
-                    // unset material pointer
-                    $u = $db->prepare("UPDATE materials SET file_id = NULL WHERE id = ?");
-                    $u->bind_param("i", $id); $u->execute(); $u->close();
+                    // kosongkan pointer di materials
+                    $u = $db->prepare("UPDATE materials SET file_id = NULL, file_path = NULL WHERE id = ?");
+                    $u->bind_param("i", $id);
+                    $u->execute();
+                    $u->close();
 
-                    // delete files table row if exists
-                    if ($filesMeta) {
-                        $t = $filesMeta['table'];
-                        $del = $db->prepare("DELETE FROM `{$t}` WHERE id = ? LIMIT 1");
-                        $del->bind_param("i", $fid);
-                        $del->execute();
-                        $del->close();
-                    }
+                    // ambil path dulu
+                    $fp = $currentFile['file_path'] ?? null;
 
-                    // attempt to unlink physical file if it lives in uploads/materials
-                    if (!empty($physical)) {
+                    // hapus row file_uploads
+                    $del = $db->prepare("DELETE FROM file_uploads WHERE id = ? LIMIT 1");
+                    $del->bind_param("i", $fid);
+                    $del->execute();
+                    $del->close();
+
+                    // hapus file fisik
+                    if (!empty($fp)) {
                         $uploadsRoot = realpath(__DIR__ . '/../uploads');
                         if ($uploadsRoot) {
-                            $full = $uploadsRoot . DIRECTORY_SEPARATOR . 'materials' . DIRECTORY_SEPARATOR . $physical;
-                            // normalize
-                            $full = str_replace(['..'.DIRECTORY_SEPARATOR], '', $full);
+                            $full = $uploadsRoot . DIRECTORY_SEPARATOR . str_replace(['../', '..\\'], '', $fp);
                             if (is_file($full) && is_readable($full)) {
-                                // try unlink and record if failed
-                                if (!@unlink($full)) {
-                                    // unlink failed (permissions?) — don't abort DB deletion but inform user
-                                    $unlinkError = 'Gagal menghapus file fisik dari storage (periksa izin).';
-                                }
-                            } else {
-                                // file tidak ada fisiknya; that's ok
+                                @unlink($full);
                             }
                         }
                     }
 
                     $db->commit();
-                    $success = 'File berhasil dihapus.' . ($unlinkError ? ' Catatan: ' . $unlinkError : '');
-                    // refresh page
-                    header('Location: ' . BASE_URL . '/materials/edit.php?id=' . $id . ($unlinkError ? '&unlink_err=1' : '&deleted=1'));
+                    header('Location: ' . BASE_URL . '/materials/edit.php?id=' . $id);
                     exit;
+
                 } catch (Exception $e) {
                     $db->rollback();
                     $error = 'Gagal menghapus file: ' . sanitize($e->getMessage());
                 }
             }
+
+        // ---- HAPUS MATERI + FILE-NYA ----
         } elseif ($action === 'delete_material') {
-            // delete entire material (moved to header) - same as before
             $db->begin_transaction();
             try {
+                // kalau ada file, hapus juga
                 if ($currentFile && !empty($currentFile['id'])) {
                     $fid = (int)$currentFile['id'];
-                    $physical = $currentFile['physical'] ?? null;
-                    if (empty($physical) && !empty($currentFile['path'])) $physical = basename($currentFile['path']);
-                    if ($filesMeta) {
-                        $t = $filesMeta['table'];
-                        $del = $db->prepare("DELETE FROM `{$t}` WHERE id = ? LIMIT 1");
-                        $del->bind_param("i", $fid);
-                        $del->execute();
-                        $del->close();
-                    }
-                    if (!empty($physical)) {
+                    $fp  = $currentFile['file_path'] ?? null;
+
+                    $delF = $db->prepare("DELETE FROM file_uploads WHERE id = ? LIMIT 1");
+                    $delF->bind_param("i", $fid);
+                    $delF->execute();
+                    $delF->close();
+
+                    if (!empty($fp)) {
                         $uploadsRoot = realpath(__DIR__ . '/../uploads');
                         if ($uploadsRoot) {
-                            $full = $uploadsRoot . DIRECTORY_SEPARATOR . 'materials' . DIRECTORY_SEPARATOR . $physical;
-                            if (is_file($full) && is_readable($full)) { @unlink($full); }
+                            $full = $uploadsRoot . DIRECTORY_SEPARATOR . str_replace(['../', '..\\'], '', $fp);
+                            if (is_file($full) && is_readable($full)) {
+                                @unlink($full);
+                            }
                         }
                     }
                 }
+
                 $d = $db->prepare("DELETE FROM materials WHERE id = ? AND created_by = ? LIMIT 1");
                 $d->bind_param("ii", $id, $userId);
                 $d->execute();
                 $affected = $d->affected_rows;
                 $d->close();
+
                 if ($affected > 0) {
                     $db->commit();
                     header('Location: ' . BASE_URL . '/materials/list.php?deleted=1');
@@ -238,6 +321,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $db->rollback();
                     $error = 'Gagal menghapus materi (mungkin bukan milik Anda).';
                 }
+
             } catch (Exception $e) {
                 $db->rollback();
                 $error = 'Gagal menghapus materi: ' . sanitize($e->getMessage());
@@ -246,8 +330,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// render page
 $pageTitle = 'Edit Materi';
+$csrf      = generateCsrfToken('edit_material_' . $id);
+
 include __DIR__ . '/../inc/header.php';
 ?>
 
@@ -258,30 +343,29 @@ include __DIR__ . '/../inc/header.php';
             <div style="font-size:14px;color:#666;"><?php echo sanitize($m['nama_mapel'] ?? ''); ?></div>
         </div>
 
-        <!-- Delete material button moved here (header) -->
         <div style="text-align:right;">
-            <a href="<?php echo BASE_URL; ?>/materials/view.php?id=<?php echo (int)$id; ?>" class="btn btn-secondary" style="margin-right:8px;">← Kembali</a>
-
-            <form method="POST" style="display:inline;" onsubmit="return confirm('Yakin menghapus materi ini secara permanen?');">
-                <?php $csrf = generateCsrfToken('edit_material_' . $id); ?>
-                <input type="hidden" name="csrf_token" value="<?php echo sanitize($csrf); ?>">
-                <input type="hidden" name="action" value="delete_material">
-                <button type="submit" class="btn btn-outline-danger">Hapus Materi</button>
-            </form>
+            <a href="<?php echo BASE_URL; ?>/materials/view.php?id=<?php echo (int)$id; ?>"
+               class="btn btn-secondary" style="margin-right:8px;">← Kembali</a>
         </div>
     </div>
 
-    <?php if ($error): ?><div class="alert alert-error"><?php echo sanitize($error); ?></div><?php endif; ?>
-    <?php if ($success): ?><div class="alert alert-success"><?php echo sanitize($success); ?></div><?php endif; ?>
+    <?php if ($error): ?>
+        <div class="alert alert-error"><?php echo sanitize($error); ?></div>
+    <?php endif; ?>
 
-    <form method="POST" enctype="multipart/form-data" onsubmit="return confirmSave();">
+    <?php if ($success): ?>
+        <div class="alert alert-success"><?php echo sanitize($success); ?></div>
+    <?php endif; ?>
+
+    <form method="POST" enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="<?php echo sanitize($csrf); ?>">
-        <input type="hidden" name="action" value="save">
 
         <div class="card" style="padding:18px;">
             <div class="form-group">
                 <label for="judul">Judul *</label>
-                <input id="judul" name="judul" type="text" required value="<?php echo sanitize($m['judul'] ?? ''); ?>" style="width:100%; padding:8px;">
+                <input id="judul" name="judul" type="text" required
+                       value="<?php echo sanitize($m['judul'] ?? ''); ?>"
+                       style="width:100%; padding:8px;">
             </div>
 
             <div class="form-group">
@@ -291,40 +375,63 @@ include __DIR__ . '/../inc/header.php';
 
             <div class="form-group">
                 <label for="video_link">Link Video (opsional)</label>
-                <input id="video_link" name="video_link" type="url" placeholder="https://..." value="<?php echo sanitize($m['video_link'] ?? ''); ?>" style="width:100%; padding:8px;">
+                <?php
+                $videoValue = $m['video_link'] ?? '';
+                if ($videoValue === '0') {
+                    $videoValue = '';
+                }
+                ?>
+                <input id="video_link" name="video_link" type="url"
+                       placeholder="https://... (boleh dikosongkan jika tidak ada)"
+                       value="<?php echo sanitize($videoValue); ?>"
+                       style="width:100%; padding:8px;">
             </div>
 
             <div class="form-group">
                 <label>File Terlampir Saat Ini</label>
                 <div style="margin-bottom:8px;">
-                    <?php if ($currentFile && (!empty($currentFile['physical']) || !empty($currentFile['path']))): ?>
+                    <?php if ($currentFile && !empty($currentFile['file_path'])): ?>
                         <?php
-                            $physical = $currentFile['physical'] ?? basename($currentFile['path'] ?? '');
-                            $serveInline = BASE_URL . '/serve_file.php?f=' . rawurlencode('materials/' . $physical) . '&mode=inline';
-                            $serveAttach = BASE_URL . '/serve_file.php?f=' . rawurlencode('materials/' . $physical) . '&mode=attachment';
+                        $relative = $currentFile['file_path']; // contoh: materials/xxx.jpeg
+                        $serveInline = BASE_URL . '/serve_file.php?f=' . rawurlencode($relative) . '&mode=inline';
+                        $serveAttach = BASE_URL . '/serve_file.php?f=' . rawurlencode($relative) . '&mode=attachment';
                         ?>
-                        <div style="display:flex; gap:8px; align-items:center;">
-                            <button type="button" onclick="window.open('<?php echo sanitize($serveInline); ?>','_blank','noopener')" class="btn btn-primary">Lihat File</button>
+                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                            <button type="button"
+                                    onclick="window.open('<?php echo sanitize($serveInline); ?>','_blank','noopener')"
+                                    class="btn btn-primary">
+                                Lihat File
+                            </button>
 
-                            <a href="<?php echo sanitize($serveAttach); ?>" class="btn" style="background:#f3f4f6;color:#111;margin-left:4px;" download>Unduh</a>
+                            <a href="<?php echo sanitize($serveAttach); ?>"
+                               class="btn" style="background:#f3f4f6;color:#111;margin-left:4px;" download>
+                                Unduh
+                            </a>
 
-                            <!-- Hapus File (POST) -->
-                            <form method="POST" style="display:inline;margin-left:8px;" onsubmit="return confirm('Yakin menghapus file terlampir? Ini akan mencoba menghapus file fisik.');">
-                                <input type="hidden" name="csrf_token" value="<?php echo sanitize($csrf); ?>">
-                                <input type="hidden" name="action" value="delete_file">
-                                <button type="submit" class="btn btn-danger">Hapus File</button>
-                            </form>
+                            <button type="submit"
+                                    name="action"
+                                    value="delete_file"
+                                    class="btn btn-danger"
+                                    style="margin-left:8px;"
+                                    onclick="return confirm('Yakin menghapus file terlampir?');">
+                                Hapus File
+                            </button>
                         </div>
 
-                        <div style="margin-top:8px;"><?php echo sanitize($currentFile['original_name'] ?? $physical); ?></div>
+                        <div style="margin-top:8px;">
+                            <?php echo sanitize($currentFile['original_name'] ?? $currentFile['stored_name']); ?>
+                        </div>
 
                         <?php
-                            $ext = strtolower(pathinfo($physical, PATHINFO_EXTENSION));
-                            $imgExts = ['jpg','jpeg','png','gif','webp','svg'];
-                            if (in_array($ext, $imgExts, true)):
+                        $ext     = strtolower(pathinfo($relative, PATHINFO_EXTENSION));
+                        $imgExts = ['jpg','jpeg','png','gif','webp','svg'];
+                        if (in_array($ext, $imgExts, true)):
                         ?>
                             <div style="margin-top:8px;">
-                                <img src="<?php echo sanitize(BASE_URL . '/serve_file.php?f=' . rawurlencode('materials/' . $physical) . '&mode=inline'); ?>" alt="" style="max-width:320px;height:auto;border:1px solid #eee;padding:6px;border-radius:8px;cursor:pointer;" onclick="window.open('<?php echo sanitize(BASE_URL . '/serve_file.php?f=' . rawurlencode('materials/' . $physical) . '&mode=inline'); ?>','_blank','noopener')">
+                                <img src="<?php echo sanitize($serveInline); ?>"
+                                     alt=""
+                                     style="max-width:320px;height:auto;border:1px solid #eee;padding:6px;border-radius:8px;cursor:pointer;"
+                                     onclick="window.open('<?php echo sanitize($serveInline); ?>','_blank','noopener')">
                             </div>
                         <?php endif; ?>
 
@@ -336,22 +443,39 @@ include __DIR__ . '/../inc/header.php';
 
             <div class="form-group">
                 <label for="file">Unggah File Baru (opsional)</label>
-                <input id="file" name="file" type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip">
-                <p style="font-size:13px;color:#666;margin-top:6px;">Jika Anda unggah file baru, file lama akan tetap ada di storage tetapi materi akan menunjuk ke file baru.</p>
+                <input id="file" name="file" type="file"
+                       accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.zip,.webp">
+                <p style="font-size:13px;color:#666;margin-top:6px;">
+                    Bagian ini opsional. Jika tidak memilih file, materi tetap tersimpan tanpa perubahan file.
+                    Jika Anda unggah file baru, materi akan menunjuk ke file baru, sementara file lama tetap ada di storage.
+                </p>
             </div>
 
-            <div style="display:flex;gap:10px;margin-top:12px;">
-                <button type="submit" class="btn btn-primary">Simpan Perubahan</button>
-                <a href="<?php echo BASE_URL; ?>/materials/list.php?id=<?php echo (int)$id; ?>" class="btn btn-secondary">Batal</a>
+            <div style="display:flex;gap:10px;margin-top:12px;align-items:center;flex-wrap:wrap;">
+                <button type="submit"
+                        class="btn btn-primary"
+                        name="action"
+                        value="save">
+                    Simpan Perubahan
+                </button>
+
+                <!-- Tombol merah jelas -->
+                <button type="submit"
+                        class="btn btn-danger"
+                        name="action"
+                        value="delete_material"
+                        style="background:#ef4444;border-color:#b91c1c;color:#fff;"
+                        onclick="return confirm('Yakin menghapus materi ini secara permanen?');">
+                    Hapus Materi
+                </button>
+
+                <a href="<?php echo BASE_URL; ?>/materials/list.php"
+                   class="btn btn-secondary">
+                    Batal
+                </a>
             </div>
         </div>
     </form>
 </div>
 
 <?php include __DIR__ . '/../inc/footer.php'; ?>
-
-<script>
-function confirmSave() {
-    return true;
-}
-</script>

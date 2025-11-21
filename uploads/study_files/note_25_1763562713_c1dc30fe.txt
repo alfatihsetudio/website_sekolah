@@ -1,0 +1,181 @@
+# Materi Aljabar Lengkap
+
+## 1. Pengertian Aljabar
+
+Aljabar adalah cabang matematika yang mempelajari simbol-simbol serta aturan untuk memanipulasinya. Biasanya aljabar digunakan untuk menyelesaikan masalah yang melibatkan variabel.
+
+---
+
+## 2. Variabel, Konstanta, dan Koefisien
+
+* **Variabel**: simbol yang mewakili nilai yang belum diketahui (misal: x, y, z).
+* **Konstanta**: bilangan tetap (misal: 2, 5, -7).
+* **Koefisien**: angka yang mengalikan variabel (misal: pada 3x, koefisiennya adalah 3).
+
+Contoh:
+
+* 5x + 7 → 5 = koefisien, x = variabel, 7 = konstanta.
+
+---
+
+## 3. Bentuk Aljabar
+
+Bentuk aljabar adalah gabungan antara angka, variabel, operasi matematika ( +, -, ×, ÷ ), pangkat, dan lain-lain.
+
+Contoh: 3x² − 5x + 10
+
+---
+
+## 4. Operasi pada Bentuk Aljabar
+
+### A. Penjumlahan dan Pengurangan
+
+Hanya bisa dilakukan pada **suku sejenis**.
+
+Contoh:
+
+* (3x + 5x) = 8x
+* (7a² − 2a²) = 5a²
+
+### B. Perkalian
+
+* Variabel dikalikan dengan variabel → pangkatnya dijumlah.
+
+Contoh:
+
+* x × x = x²
+* 3x × 4x² = 12x³
+
+### C. Pembagian
+
+* Variabel dibagi variabel → pangkatnya dikurang.
+
+Contoh:
+
+* x³ ÷ x = x²
+* 12x² ÷ 3x = 4x
+
+---
+
+## 5. Faktorisasi Aljabar
+
+Faktorisasi adalah memecah bentuk aljabar menjadi faktor-faktor penyusunnya.
+
+### A. Menggunakan Faktor Persekutuan Terbesar (FPB)
+
+Contoh:
+
+* 6x + 12 = 6(x + 2)
+
+### B. Faktorisasi Bentuk Kuadrat
+
+Bentuk: ax² + bx + c
+
+Contoh:
+
+* x² + 5x + 6 = (x + 2)(x + 3)
+
+### C. Selisih Dua Kuadrat
+
+a² − b² = (a − b)(a + b)
+
+Contoh:
+
+* x² − 16 = (x − 4)(x + 4)
+
+---
+
+## 6. Persamaan Linear dan Kuadrat
+
+### A. Persamaan Linear
+
+Bentuk umum: ax + b = 0
+
+Contoh penyelesaian:
+
+* 3x + 6 = 0 → x = −2
+
+### B. Persamaan Kuadrat
+
+Bentuk umum: ax² + bx + c = 0
+
+Metode penyelesaian:
+
+1. Faktorisasi
+2. Rumus kuadrat:
+   x = (-b ± √(b² − 4ac)) / (2a)
+3. Melengkapkan kuadrat
+
+---
+
+## 7. Sistem Persamaan Linear
+
+Menyelesaikan dua persamaan linear dengan dua variabel.
+
+Metode:
+
+* Eliminasi
+* Substitusi
+* Grafik
+
+Contoh:
+
+* x + y = 10
+* x − y = 4
+
+Hasil:
+
+* x = 7
+* y = 3
+
+---
+
+## 8. Bentuk Pangkat dan Akar
+
+### A. Aturan Pangkat
+
+* a^m × a^n = a^(m+n)
+* a^m ÷ a^n = a^(m−n)
+* (a^m)^n = a^(mn)
+
+### B. Bentuk Akar
+
+* √a × √b = √(ab)
+* √a ÷ √b = √(a/b)
+
+---
+
+## 9. Aljabar dalam Kehidupan Sehari-Hari
+
+Aljabar digunakan untuk:
+
+* Menghitung harga total belanja
+* Menentukan jarak, waktu, kecepatan
+* Menyelesaikan soal bisnis dan ekonomi
+* Menghitung luas dan volume
+
+---
+
+## 10. Contoh Soal dan Pembahasan Singkat
+
+1. Sederhanakan: 4x + 7x − 2x
+
+   * Jawab: 9x
+2. Faktorkan: x² − 9
+
+   * Jawab: (x − 3)(x + 3)
+3. Selesaikan: 2x − 10 = 0
+
+   * Jawab: x = 5
+
+---
+
+## 11. Ringkasan
+
+* Aljabar adalah studi tentang variabel dan operasi matematika.
+* Operasi dasar: tambah, kurang, kali, bagi.
+* Materi penting: faktorisasi, persamaan, pangkat, akar, dan sistem persamaan.
+
+---
+
+Jika ingin ditambah dengan latihan soal lebih banyak atau dibuatkan versi yang lebih lengkap lagi (misalnya setebal modul), tinggal beri tahu saya!

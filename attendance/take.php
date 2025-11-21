@@ -1,6 +1,6 @@
-<?php
+<?php 
 // attendance/take.php
-// Guru mengisi absensi satu kelas (berdasarkan mapel + tanggal)
+// Guru mengisi absensi + nilai harian satu kelas (berdasarkan mapel + tanggal)
 
 require_once __DIR__ . '/../inc/auth.php';
 require_once __DIR__ . '/../inc/db.php';
@@ -54,15 +54,20 @@ foreach ($subjects as $s) {
     }
 }
 
-// --- PROSES POST (simpan absensi) ---
+// materi yang tersimpan (kalau sudah pernah diisi)
+$existingMateri = '';
+
+// --- PROSES POST (simpan absensi + nilai harian) ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $selectedSubjectId > 0 && $selectedClassId > 0) {
     $token = $_POST['csrf_token'] ?? '';
     if (!verifyCsrfToken($token, 'attendance_take')) {
         $error = 'Token keamanan tidak valid. Silakan muat ulang halaman.';
     } else {
-        // data status: status[student_id] = H/S/I/A
+        // data status & nilai: status[student_id], note[student_id], nilai[student_id]
         $statusArr = $_POST['status'] ?? [];
-        $noteArr   = $_POST['note'] ?? [];
+        $noteArr   = $_POST['note']   ?? [];
+        $nilaiArr  = $_POST['nilai']  ?? [];
+        $materi    = trim($_POST['materi'] ?? '');
 
         if (empty($statusArr)) {
             $error = 'Tidak ada data siswa untuk disimpan.';
@@ -72,13 +77,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $selectedSubjectId > 0 && $selected
 
                 $sql = "
                     INSERT INTO attendance
-                        (student_id, class_id, subject_id, date, status, note, created_by, created_at, updated_at)
+                        (student_id, class_id, subject_id, date, materi, status, note, daily_score, created_by, created_at, updated_at)
                     VALUES
-                        (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+                        (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
                     ON DUPLICATE KEY UPDATE
-                        status    = VALUES(status),
-                        note      = VALUES(note),
-                        updated_at = NOW()
+                        materi      = VALUES(materi),
+                        status      = VALUES(status),
+                        note        = VALUES(note),
+                        daily_score = VALUES(daily_score),
+                        updated_at  = NOW()
                 ";
                 $ins = $db->prepare($sql);
                 if (!$ins) {
@@ -91,16 +98,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $selectedSubjectId > 0 && $selected
                     if (!in_array($st, ['H','S','I','A'], true)) {
                         $st = 'H';
                     }
-                    $note = trim($noteArr[$sid] ?? '');
+                    $note  = trim($noteArr[$sid] ?? '');
+                    $nilai = null;
+                    if (isset($nilaiArr[$sid]) && $nilaiArr[$sid] !== '') {
+                        $nilai = (float)$nilaiArr[$sid];
+                    }
 
                     $ins->bind_param(
-                        "iiisssi",
+                        "iiissssdi",
                         $sid,
                         $selectedClassId,
                         $selectedSubjectId,
                         $selectedDate,
+                        $materi,
                         $st,
                         $note,
+                        $nilai,
                         $guruId
                     );
                     if (!$ins->execute()) {
@@ -110,10 +123,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $selectedSubjectId > 0 && $selected
 
                 $ins->close();
                 $db->commit();
-                $success = 'Absensi berhasil disimpan untuk tanggal ' . sanitize($selectedDate);
+                $success = 'Absensi & nilai harian berhasil disimpan untuk tanggal ' . sanitize($selectedDate);
+                $existingMateri = $materi;
             } catch (Exception $e) {
                 $db->rollback();
-                $error = 'Terjadi kesalahan saat menyimpan absensi: ' . $e->getMessage();
+                $error = 'Terjadi kesalahan saat menyimpan data: ' . $e->getMessage();
             }
         }
     }
@@ -121,7 +135,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $selectedSubjectId > 0 && $selected
 
 // --- Jika subject & kelas sudah dipilih: ambil daftar siswa + absensi sebelumnya ---
 $students  = [];
-$attMap    = [];   // [student_id] => ['status'=>..,'note'=>..]
+$attMap    = [];   // [student_id] => ['status'=>..,'note'=>..,'daily_score'=>..,'materi'=>..]
 
 if ($selectedSubjectId > 0 && $selectedClassId > 0) {
     // daftar siswa di kelas
@@ -142,7 +156,7 @@ if ($selectedSubjectId > 0 && $selectedClassId > 0) {
 
     // ambil absensi existing utk tanggal ini
     $at = $db->prepare("
-        SELECT student_id, status, note
+        SELECT student_id, status, note, materi, daily_score
         FROM attendance
         WHERE class_id = ? AND subject_id = ? AND date = ?
     ");
@@ -151,13 +165,17 @@ if ($selectedSubjectId > 0 && $selectedClassId > 0) {
         $at->execute();
         $ra = $at->get_result();
         while ($row = $ra->fetch_assoc()) {
-            $attMap[(int)$row['student_id']] = $row;
+            $sid = (int)$row['student_id'];
+            $attMap[$sid] = $row;
+            if ($existingMateri === '' && !empty($row['materi'])) {
+                $existingMateri = $row['materi'];
+            }
         }
         $at->close();
     }
 }
 
-$pageTitle = 'Absensi Kelas';
+$pageTitle = 'Absensi & Nilai Harian';
 include __DIR__ . '/../inc/header.php';
 
 $baseUrl = rtrim(BASE_URL, '/\\');
@@ -165,8 +183,8 @@ $baseUrl = rtrim(BASE_URL, '/\\');
 
 <div class="container">
     <div class="page-header">
-        <h1>Absensi Kelas</h1>
-        <a href="<?php echo $baseUrl; ?>/dashboard.php" class="btn btn-secondary">← Kembali</a>
+        <h1>Absensi & Nilai Harian</h1>
+        <a href="<?php echo $baseUrl; ?>/dashboard/guru.php" class="btn btn-secondary">← Kembali</a>
     </div>
 
     <?php if ($error): ?>
@@ -217,14 +235,28 @@ $baseUrl = rtrim(BASE_URL, '/\\');
                 <?php $csrf = generateCsrfToken('attendance_take'); ?>
                 <div class="card">
                     <h3>
-                        Absensi <?php echo sanitize($selectedSubject['nama_kelas']); ?>
+                        <?php echo sanitize($selectedSubject['nama_kelas']); ?>
                         — <?php echo sanitize($selectedSubject['nama_mapel']); ?>
                         (<?php echo sanitize($selectedDate); ?>)
                     </h3>
+
                     <form method="POST">
                         <input type="hidden" name="csrf_token" value="<?php echo sanitize($csrf); ?>">
                         <input type="hidden" name="subject_id" value="<?php echo (int)$selectedSubjectId; ?>">
                         <input type="hidden" name="date" value="<?php echo sanitize($selectedDate); ?>">
+
+                        <div class="form-group" style="margin-top:10px;">
+                            <label for="materi">Materi / Topik Hari Ini</label>
+                            <input type="text"
+                                   id="materi"
+                                   name="materi"
+                                   placeholder="Contoh: Persamaan Linear, Bab 3, dst."
+                                   value="<?php
+                                       echo sanitize(
+                                           $_POST['materi'] ?? $existingMateri
+                                       );
+                                   ?>">
+                        </div>
 
                         <table class="table" style="width:100%; margin-top:12px;">
                             <thead>
@@ -233,6 +265,7 @@ $baseUrl = rtrim(BASE_URL, '/\\');
                                     <th>Nama Siswa</th>
                                     <th>Status</th>
                                     <th>Keterangan</th>
+                                    <th>Nilai harian<br><span style="font-size:0.78rem;color:#6b7280;">(opsional, 0–100)</span></th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -246,8 +279,9 @@ $baseUrl = rtrim(BASE_URL, '/\\');
                                 foreach ($students as $i => $st):
                                     $sid = (int)$st['id'];
                                     $att = $attMap[$sid] ?? null;
-                                    $curStatus = $att['status'] ?? 'H';
-                                    $curNote   = $att['note'] ?? '';
+                                    $curStatus = $att['status']      ?? 'H';
+                                    $curNote   = $att['note']        ?? '';
+                                    $curScore  = $att['daily_score'] ?? '';
                                 ?>
                                     <tr>
                                         <td><?php echo $i + 1; ?></td>
@@ -268,12 +302,19 @@ $baseUrl = rtrim(BASE_URL, '/\\');
                                                    value="<?php echo sanitize($curNote); ?>"
                                                    placeholder="Opsional (misal: datang terlambat)">
                                         </td>
+                                        <td>
+                                            <input type="number"
+                                                   name="nilai[<?php echo $sid; ?>]"
+                                                   value="<?php echo sanitize($curScore); ?>"
+                                                   min="0" max="100" step="0.01"
+                                                   style="width:90px;">
+                                        </td>
                                     </tr>
                                 <?php endforeach; ?>
                             </tbody>
                         </table>
 
-                        <button type="submit" class="btn btn-primary">Simpan Absensi</button>
+                        <button type="submit" class="btn btn-primary">Simpan Absensi & Nilai</button>
                     </form>
                 </div>
             <?php endif; ?>

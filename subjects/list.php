@@ -3,115 +3,181 @@ require_once __DIR__ . '/../inc/auth.php';
 require_once __DIR__ . '/../inc/db.php';
 require_once __DIR__ . '/../inc/helpers.php';
 
-$pageTitle = 'Daftar Mata Pelajaran';
-include __DIR__ . '/../inc/header.php';
+requireLogin();
 
-$db = getDB();
-$userId = (int)($_SESSION['user_id'] ?? 0);
-$role = $_SESSION['role'] ?? 'siswa';
+$db      = getDB();
+$baseUrl = rtrim(BASE_URL, '/\\');
 
-$subjects = [];
+$userId   = (int)($_SESSION['user_id'] ?? 0);
+$role     = getUserRole() ?? ($_SESSION['role'] ?? 'siswa');
+$schoolId = (int) getCurrentSchoolId();
+
+$subjects   = [];
+$errorFetch = '';
 
 /**
- * Helper: ambil display nama kelas (prefer nama_kelas, fallback ke class_level + jurusan)
+ * Helper: tampilan nama kelas (prefer nama_kelas)
  */
 function kelas_display($row) {
-    if (!empty($row['nama_kelas'])) {
-        return $row['nama_kelas'];
-    }
+    if (!empty($row['nama_kelas'])) return $row['nama_kelas'];
+
     $lv = trim($row['class_level'] ?? '');
     $jr = trim($row['jurusan'] ?? '');
-    $comb = trim(($lv ? $lv . ' ' : '') . $jr);
-    return $comb ?: '-';
+    $mix = trim(($lv ? $lv . ' ' : '') . $jr);
+    return $mix ?: '-';
 }
 
-/* ===========================
-   Branch: guru
-   =========================== */
-if ($role === 'guru') {
-    $sql = "
-        SELECT s.id, s.nama_mapel, c.nama_kelas, s.class_level, s.jurusan
-        FROM subjects s
-        LEFT JOIN classes c ON s.class_id = c.id
-        WHERE s.guru_id = ?
-        ORDER BY COALESCE(c.nama_kelas, CONCAT(s.class_level, ' ', s.jurusan)), s.nama_mapel
-    ";
-    $stmt = $db->prepare($sql);
-    if ($stmt) {
-        $stmt->bind_param("i", $userId);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        $subjects = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
-        $stmt->close();
-    } else {
-        // jika prepare gagal, tetap kosong tapi beri pesan di UI nanti
-        $subjects = [];
-        $errorFetch = 'Gagal mengambil data mata pelajaran (guru).';
+/**
+ * Helper: cari kolom nama user yang tersedia
+ */
+function detectUserNameColumn(mysqli $db) {
+    $possible = ['nama', 'name', 'full_name', 'username'];
+    $res = $db->query("SHOW COLUMNS FROM users");
+    if ($res) {
+        while ($col = $res->fetch_assoc()) {
+            $f = strtolower($col['Field']);
+            if (in_array($f, $possible, true)) {
+                return $col['Field'];
+            }
+        }
     }
+    return null;
+}
+
+$userNameCol = detectUserNameColumn($db);
+$guruSelect  = $userNameCol
+    ? ", u.`{$userNameCol}` AS guru_name"
+    : ", '' AS guru_name";
+
+// Cek school_id valid
+if ($schoolId <= 0) {
+    $subjects   = [];
+    $errorFetch = 'School ID tidak ditemukan. Silakan login ulang.';
 } else {
+
     /* ===========================
-       Branch: siswa / lainnya
-       Coba query terhadap table class_user, kalau gagal coba class_members (fallback)
+       ROLE: GURU
        =========================== */
-    $queriesToTry = [
-        // seperti file awal user: class_user
-        "
-        SELECT DISTINCT s.id, s.nama_mapel, c.nama_kelas, s.class_level, s.jurusan, u.name AS guru_name
-        FROM subjects s
-        LEFT JOIN classes c ON s.class_id = c.id
-        JOIN class_user cu ON cu.class_id = c.id
-        LEFT JOIN users u ON u.id = s.guru_id
-        WHERE cu.user_id = ?
-        ORDER BY COALESCE(c.nama_kelas, CONCAT(s.class_level, ' ', s.jurusan)), s.nama_mapel
-        ",
-        // fallback: class_members (nama tabel alternatif)
-        "
-        SELECT DISTINCT s.id, s.nama_mapel, c.nama_kelas, s.class_level, s.jurusan, u.name AS guru_name
-        FROM subjects s
-        LEFT JOIN classes c ON s.class_id = c.id
-        JOIN class_members cu ON cu.class_id = c.id
-        LEFT JOIN users u ON u.id = s.guru_id
-        WHERE cu.user_id = ?
-        ORDER BY COALESCE(c.nama_kelas, CONCAT(s.class_level, ' ', s.jurusan)), s.nama_mapel
-        "
-    ];
-
-    $subjects = [];
-    $errorFetch = '';
-    foreach ($queriesToTry as $q) {
-        $stmt = $db->prepare($q);
-        if (!$stmt) {
-            // prepare gagal (mis. tabel tidak ada), coba query berikutnya
-            continue;
-        }
-        $stmt->bind_param("i", $userId);
-        if (!$stmt->execute()) {
+    if ($role === 'guru') {
+        $sql = "
+            SELECT
+                s.id,
+                s.nama_mapel,
+                c.nama_kelas,
+                s.class_level,
+                s.jurusan
+            FROM subjects s
+            LEFT JOIN classes c ON s.class_id = c.id
+            WHERE s.guru_id   = ?
+              AND s.school_id = ?
+            ORDER BY COALESCE(c.nama_kelas, CONCAT(s.class_level, ' ', s.jurusan)), s.nama_mapel
+        ";
+        $stmt = $db->prepare($sql);
+        if ($stmt) {
+            $stmt->bind_param("ii", $userId, $schoolId);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $subjects = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
             $stmt->close();
-            continue;
+        } else {
+            $errorFetch = 'Query guru gagal disiapkan.';
         }
-        $res = $stmt->get_result();
-        $subjects = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
-        $stmt->close();
-        // jika berhasil dan data (atau kosong) diperoleh, hentikan loop
-        break;
-    }
 
-    if ($stmt === false) {
-        $errorFetch = 'Gagal mengambil data mata pelajaran (siswa). Pastikan tabel relasi kelas-siswa ada.';
+    /* ===========================
+       ROLE: ADMIN
+       Melihat seluruh mapel sekolah
+       =========================== */
+    } elseif ($role === 'admin') {
+
+        $sql = "
+            SELECT
+                s.id,
+                s.nama_mapel,
+                c.nama_kelas,
+                s.class_level,
+                s.jurusan
+                {$guruSelect}
+            FROM subjects s
+            LEFT JOIN classes c ON s.class_id = c.id
+            LEFT JOIN users   u ON s.guru_id = u.id
+            WHERE s.school_id = ?
+            ORDER BY COALESCE(c.nama_kelas, CONCAT(s.class_level, ' ', s.jurusan)), s.nama_mapel
+        ";
+
+        $stmt = $db->prepare($sql);
+        if ($stmt) {
+            $stmt->bind_param("i", $schoolId);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $subjects = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
+            $stmt->close();
+        } else {
+            $errorFetch = 'Query admin gagal disiapkan.';
+        }
+
+    /* ===========================
+       ROLE: SISWA / MURID
+       =========================== */
+    } else {
+
+        $sql = "
+            SELECT DISTINCT
+                s.id,
+                s.nama_mapel,
+                c.nama_kelas,
+                s.class_level,
+                s.jurusan
+                {$guruSelect}
+            FROM subjects s
+            LEFT JOIN classes c ON s.class_id = c.id
+            LEFT JOIN users   u ON s.guru_id = u.id
+            WHERE s.school_id = ?
+              AND c.school_id = ?
+              AND (
+                    c.id IN (
+                        SELECT cu.class_id
+                        FROM class_user cu
+                        WHERE cu.user_id = ?
+                    )
+                    OR c.id = (
+                        SELECT class_id FROM users WHERE id = ? LIMIT 1
+                    )
+                 )
+            ORDER BY COALESCE(c.nama_kelas, CONCAT(s.class_level, ' ', s.jurusan)), s.nama_mapel
+        ";
+
+        $stmt = $db->prepare($sql);
+        if ($stmt) {
+            $stmt->bind_param("iiii", $schoolId, $schoolId, $userId, $userId);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $subjects = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
+            $stmt->close();
+        } else {
+            $errorFetch = 'Query siswa gagal disiapkan.';
+        }
     }
 }
 
+$pageTitle = 'Daftar Mata Pelajaran';
+include __DIR__ . '/../inc/header.php';
 ?>
 
 <div class="container">
-    <div class="page-header">
+    <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;">
         <h1>Daftar Mata Pelajaran</h1>
-        <?php if ($role === 'guru'): ?>
-            <a href="/web_MG/subjects/create.php" class="btn btn-primary">+ Tambah Mata Pelajaran</a>
-        <?php endif; ?>
+
+        <div style="display:flex;gap:10px;">
+            <a href="<?php echo $baseUrl; ?>/dashboard/<?php echo ($role==='admin' ? 'admin' : ($role==='guru'?'guru':'murid')); ?>.php"
+               class="btn btn-secondary">← Kembali ke Dashboard</a>
+
+            <?php if ($role === 'guru' || $role === 'admin'): ?>
+                <a href="/web_MG/subjects/create.php" class="btn btn-primary">+ Tambah Mata Pelajaran</a>
+            <?php endif; ?>
+        </div>
     </div>
 
-    <?php if (!empty($errorFetch)): ?>
+    <?php if ($errorFetch): ?>
         <div class="alert alert-error"><?php echo sanitize($errorFetch); ?></div>
     <?php endif; ?>
 
@@ -119,6 +185,7 @@ if ($role === 'guru') {
         <div class="card">
             <p>Tidak ada mata pelajaran.</p>
         </div>
+
     <?php else: ?>
         <div class="card">
             <table class="table" style="width:100%;">
@@ -136,19 +203,24 @@ if ($role === 'guru') {
                 <tbody>
                     <?php foreach ($subjects as $idx => $s): ?>
                         <tr>
-                            <td><?php echo $idx + 1; ?></td>
+                            <td><?php echo (int)($idx + 1); ?></td>
                             <td><?php echo sanitize($s['nama_mapel']); ?></td>
                             <td><?php echo sanitize(kelas_display($s)); ?></td>
+
                             <?php if ($role !== 'guru'): ?>
                                 <td><?php echo sanitize($s['guru_name'] ?? '-'); ?></td>
                             <?php endif; ?>
+
                             <td>
                                 <a href="/web_MG/subjects/view.php?id=<?php echo (int)$s['id']; ?>">Lihat</a>
-                                <?php if ($role === 'guru'): ?>
+
+                                <?php if ($role === 'guru' || $role === 'admin'): ?>
                                     &middot; <a href="/web_MG/subjects/edit.php?id=<?php echo (int)$s['id']; ?>">Edit</a>
-                                    &middot; <a href="/web_MG/subjects/delete.php?id=<?php echo (int)$s['id']; ?>" onclick="return confirm('Hapus mapel ini?')">Hapus</a>
+                                    &middot; <a href="/web_MG/subjects/delete.php?id=<?php echo (int)$s['id']; ?>"
+                                               onclick="return confirm('Hapus mapel ini?')">Hapus</a>
                                 <?php endif; ?>
                             </td>
+
                         </tr>
                     <?php endforeach; ?>
                 </tbody>

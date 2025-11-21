@@ -235,7 +235,7 @@ include __DIR__ . '/../inc/header.php';
             </button>
 
             <p style="margin-top:12px;font-size:0.9rem;text-align:center;">
-                <a href="<?php echo $baseUrl; ?>/dashboard/murid.php">← Kembali ke Dashboard</a>
+                <a href="<?php echo $baseUrl; ?>/dashboard/guru.php">← Kembali ke Dashboard</a>
             </p>
         </form>
     </div>

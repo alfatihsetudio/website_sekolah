@@ -387,6 +387,15 @@ include __DIR__ . '/../inc/header.php';
                 </div>
             </a>
 
+            <!-- SHORTCUT BARU: REKAP NILAI HARIAN -->
+            <a href="<?php echo $baseUrl; ?>/grades/daily_recap.php" class="quick-tile">
+                <div class="quick-icon">📈</div>
+                <div class="quick-title">Rekap nilai harian</div>
+                <div class="quick-desc">
+                    Lihat rekap nilai berdasarkan tanggal pengumpulan tugas.
+                </div>
+            </a>
+
             <a href="<?php echo $baseUrl; ?>/materials/list.php" class="quick-tile">
                 <div class="quick-icon">📚</div>
                 <div class="quick-title">Kelola materi</div>

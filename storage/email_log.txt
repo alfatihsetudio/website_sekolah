@@ -26,3 +26,6 @@
 [2025-11-18 21:43:24] ATTEMPT: send_password_email_smtp to=alfatih.sayuti.com@gmail.com name=Al-Fatih Ahmad An-Nizsamy
 [2025-11-18 21:43:29] SENT: to=alfatih.sayuti.com@gmail.com ok
 [2025-11-18 21:43:29] SENT: user_id=25 email=alfatih.sayuti.com@gmail.com
+[2025-11-21 20:18:37] ATTEMPT: send_password_email_smtp to=regiaasabilasilmi@gmail.com name=regia
+[2025-11-21 20:18:43] SENT: to=regiaasabilasilmi@gmail.com ok
+[2025-11-21 20:18:43] SENT: user_id=26 email=regiaasabilasilmi@gmail.com

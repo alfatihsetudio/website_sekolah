@@ -1,0 +1,1127 @@
+<?php
+// space_belajar/file_exploler.php
+require_once __DIR__ . '/../inc/auth.php';
+require_once __DIR__ . '/../inc/db.php';
+require_once __DIR__ . '/../inc/helpers.php';
+
+requireLogin();
+
+$role = getUserRole();
+if (!in_array($role, ['murid','siswa'], true)) {
+    http_response_code(403);
+    echo "Halaman ini khusus untuk akun murid.";
+    exit;
+}
+
+$db      = getDB();
+$baseUrl = rtrim(BASE_URL, '/\\');
+$userId  = (int)($_SESSION['user_id'] ?? 0);
+
+if ($userId <= 0) {
+    http_response_code(403);
+    echo "Sesi login tidak valid.";
+    exit;
+}
+
+// Folder upload
+$uploadBaseDir = __DIR__ . '/../uploads/study_files';
+if (!is_dir($uploadBaseDir)) {
+    @mkdir($uploadBaseDir, 0777, true);
+}
+
+function sb_clean($v) {
+    return trim((string)$v);
+}
+
+// Folder aktif
+$currentFolderId = isset($_GET['folder']) ? (int)$_GET['folder'] : 0;
+
+// Pastikan folder aktif milik user
+if ($currentFolderId > 0) {
+    $stmt = $db->prepare("SELECT id FROM study_folders WHERE id = ? AND user_id = ? LIMIT 1");
+    if ($stmt) {
+        $stmt->bind_param("ii", $currentFolderId, $userId);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        if (!$res || !$res->num_rows) {
+            $currentFolderId = 0;
+        }
+        $stmt->close();
+    } else {
+        $currentFolderId = 0;
+    }
+}
+
+// Search
+$searchQuery = sb_clean($_GET['q'] ?? '');
+
+// File untuk preview & edit catatan
+$viewFileId = isset($_GET['view']) ? (int)$_GET['view'] : 0;
+$editFileId = isset($_GET['edit']) ? (int)$_GET['edit'] : 0;
+
+$viewFile    = null;
+$editFile    = null;
+$editContent = '';
+
+// Ambil data file untuk preview
+if ($viewFileId > 0) {
+    $stmt = $db->prepare("
+        SELECT id, user_id, folder_id, title, original_name, stored_name, mime_type, size_bytes, description, created_at
+        FROM study_files
+        WHERE id = ? AND user_id = ?
+        LIMIT 1
+    ");
+    if ($stmt) {
+        $stmt->bind_param("ii", $viewFileId, $userId);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        if ($res && $res->num_rows) {
+            $viewFile = $res->fetch_assoc();
+        }
+        $stmt->close();
+    }
+}
+
+// Ambil data file untuk edit catatan (jika ada)
+if ($editFileId > 0) {
+    $stmt = $db->prepare("
+        SELECT id, user_id, folder_id, title, original_name, stored_name, mime_type, size_bytes, description, created_at
+        FROM study_files
+        WHERE id = ? AND user_id = ?
+        LIMIT 1
+    ");
+    if ($stmt) {
+        $stmt->bind_param("ii", $editFileId, $userId);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        if ($res && $res->num_rows) {
+            $editFile = $res->fetch_assoc();
+            if (!empty($editFile['stored_name'])) {
+                $fsPath = $uploadBaseDir . '/' . $editFile['stored_name'];
+                if (is_file($fsPath) && is_readable($fsPath)) {
+                    $editContent = (string)file_get_contents($fsPath);
+                }
+            }
+        }
+        $stmt->close();
+    }
+}
+
+// -------------------- HANDLE POST -------------------- //
+$errors     = [];
+$successMsg = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
+
+    // 1) Buat folder
+    if ($action === 'create_folder') {
+        $folderName = sb_clean($_POST['folder_name'] ?? '');
+        $parentId   = (int)($_POST['parent_id'] ?? 0);
+
+        if ($folderName === '') {
+            $errors[] = 'Nama folder tidak boleh kosong.';
+        } else {
+            if ($parentId > 0) {
+                $stmt = $db->prepare("SELECT id FROM study_folders WHERE id = ? AND user_id = ? LIMIT 1");
+                if ($stmt) {
+                    $stmt->bind_param("ii", $parentId, $userId);
+                    $stmt->execute();
+                    $r = $stmt->get_result();
+                    if (!$r || !$r->num_rows) {
+                        $parentId = 0;
+                    }
+                    $stmt->close();
+                } else {
+                    $parentId = 0;
+                }
+            }
+
+            $stmt = $db->prepare("
+                INSERT INTO study_folders (user_id, parent_id, name, created_at, updated_at)
+                VALUES (?, ?, ?, NOW(), NOW())
+            ");
+            if ($stmt) {
+                $stmt->bind_param("iis", $userId, $parentId, $folderName);
+                if ($stmt->execute()) {
+                    header('Location: ' . $baseUrl . '/space_belajar/file_exploler.php?folder=' . $parentId);
+                    exit;
+                } else {
+                    $errors[] = 'Gagal membuat folder: ' . $stmt->error;
+                }
+                $stmt->close();
+            } else {
+                $errors[] = 'Gagal menyiapkan query folder.';
+            }
+        }
+
+    // 2) Upload file (termasuk kamera)
+    } elseif ($action === 'upload_file') {
+        $parentId = (int)($_POST['parent_id'] ?? 0);
+
+        if ($parentId > 0) {
+            $stmt = $db->prepare("SELECT id FROM study_folders WHERE id = ? AND user_id = ? LIMIT 1");
+            if ($stmt) {
+                $stmt->bind_param("ii", $parentId, $userId);
+                $stmt->execute();
+                $r = $stmt->get_result();
+                if (!$r || !$r->num_rows) {
+                    $parentId = 0;
+                }
+                $stmt->close();
+            }
+        }
+
+        if (empty($_FILES['upload_file']) || $_FILES['upload_file']['error'] !== UPLOAD_ERR_OK) {
+            $errors[] = 'Pilih file yang ingin diunggah.';
+        } else {
+            $tmp      = $_FILES['upload_file']['tmp_name'];
+            $origName = $_FILES['upload_file']['name'];
+            $size     = (int)$_FILES['upload_file']['size'];
+            $mime     = $_FILES['upload_file']['type'] ?? 'application/octet-stream';
+
+            if ($size <= 0) {
+                $errors[] = 'Ukuran file tidak valid.';
+            } else {
+                $ext       = pathinfo($origName, PATHINFO_EXTENSION);
+                $randomKey = bin2hex(random_bytes(4));
+                $stored    = time() . '_' . $randomKey . ($ext ? '.' . $ext : '');
+                $destPath  = $uploadBaseDir . '/' . $stored;
+
+                if (!@move_uploaded_file($tmp, $destPath)) {
+                    $errors[] = 'Gagal menyimpan file di server.';
+                } else {
+                    $title = sb_clean($_POST['file_title'] ?? '');
+                    if ($title === '') {
+                        $title = $origName;
+                    }
+                    $desc      = sb_clean($_POST['file_desc'] ?? '');
+                    $sizeBytes = $size;
+
+                    $stmt = $db->prepare("
+                        INSERT INTO study_files (user_id, folder_id, title, original_name, stored_name, mime_type, size_bytes, description, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                    ");
+                    if ($stmt) {
+                        $stmt->bind_param("iissssis", $userId, $parentId, $title, $origName, $stored, $mime, $sizeBytes, $desc);
+                        if ($stmt->execute()) {
+                            header('Location: ' . $baseUrl . '/space_belajar/file_exploler.php?folder=' . $parentId);
+                            exit;
+                        } else {
+                            $errors[] = 'Gagal menyimpan data file: ' . $stmt->error;
+                        }
+                        $stmt->close();
+                    } else {
+                        $errors[] = 'Gagal menyiapkan query file.';
+                    }
+                }
+            }
+        }
+
+    // 3) Tambah catatan
+    } elseif ($action === 'add_note') {
+        $parentId    = (int)($_POST['parent_id'] ?? 0);
+        $noteTitle   = sb_clean($_POST['note_title'] ?? '');
+        $noteContent = (string)($_POST['note_content'] ?? '');
+
+        if ($noteTitle === '') {
+            $errors[] = 'Judul catatan tidak boleh kosong.';
+        } elseif ($noteContent === '') {
+            $errors[] = 'Isi catatan tidak boleh kosong.';
+        } else {
+            if ($parentId > 0) {
+                $stmt = $db->prepare("SELECT id FROM study_folders WHERE id = ? AND user_id = ? LIMIT 1");
+                if ($stmt) {
+                    $stmt->bind_param("ii", $parentId, $userId);
+                    $stmt->execute();
+                    $r = $stmt->get_result();
+                    if (!$r || !$r->num_rows) {
+                        $parentId = 0;
+                    }
+                    $stmt->close();
+                }
+            }
+
+            $randomKey = bin2hex(random_bytes(4));
+            $stored    = 'note_' . $userId . '_' . time() . '_' . $randomKey . '.txt';
+            $destPath  = $uploadBaseDir . '/' . $stored;
+
+            if (file_put_contents($destPath, $noteContent) === false) {
+                $errors[] = 'Gagal menyimpan catatan ke file.';
+            } else {
+                $origName  = $stored;
+                $mime      = 'text/plain';
+                $sizeBytes = filesize($destPath);
+
+                $stmt = $db->prepare("
+                    INSERT INTO study_files (user_id, folder_id, title, original_name, stored_name, mime_type, size_bytes, description, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, '', NOW())
+                ");
+                if ($stmt) {
+                    $stmt->bind_param("iissssi", $userId, $parentId, $noteTitle, $origName, $stored, $mime, $sizeBytes);
+                    if ($stmt->execute()) {
+                        header('Location: ' . $baseUrl . '/space_belajar/file_exploler.php?folder=' . $parentId);
+                        exit;
+                    } else {
+                        $errors[] = 'Gagal menyimpan catatan ke database: ' . $stmt->error;
+                    }
+                    $stmt->close();
+                } else {
+                    $errors[] = 'Gagal menyiapkan query catatan.';
+                }
+            }
+        }
+
+    // 4) Update catatan
+    } elseif ($action === 'update_note') {
+        $fileId      = (int)($_POST['file_id'] ?? 0);
+        $noteTitle   = sb_clean($_POST['note_title'] ?? '');
+        $noteContent = (string)($_POST['note_content'] ?? '');
+
+        if ($fileId <= 0) {
+            $errors[] = 'Catatan tidak ditemukan.';
+        } else {
+            $stmt = $db->prepare("
+                SELECT id, folder_id, stored_name, mime_type
+                FROM study_files
+                WHERE id = ? AND user_id = ?
+                LIMIT 1
+            ");
+            if ($stmt) {
+                $stmt->bind_param("ii", $fileId, $userId);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                if ($res && $res->num_rows) {
+                    $row       = $res->fetch_assoc();
+                    $folderId  = (int)$row['folder_id'];
+                    $stored    = $row['stored_name'];
+                    $mime      = $row['mime_type'];
+                    $stmt->close();
+
+                    $path = $uploadBaseDir . '/' . $stored;
+                    if ($mime === 'text/plain' && is_file($path) && is_writable($path)) {
+                        if (file_put_contents($path, $noteContent) === false) {
+                            $errors[] = 'Gagal memperbarui isi catatan.';
+                        } else {
+                            $newSize = filesize($path);
+                            $stmtU = $db->prepare("
+                                UPDATE study_files
+                                SET title = ?, size_bytes = ?
+                                WHERE id = ? AND user_id = ?
+                            ");
+                            if ($stmtU) {
+                                $stmtU->bind_param("siii", $noteTitle, $newSize, $fileId, $userId);
+                                if ($stmtU->execute()) {
+                                    header('Location: ' . $baseUrl . '/space_belajar/file_exploler.php?folder=' . $folderId . '&view=' . $fileId);
+                                    exit;
+                                } else {
+                                    $errors[] = 'Gagal update data catatan: ' . $stmtU->error;
+                                }
+                                $stmtU->close();
+                            } else {
+                                $errors[] = 'Gagal menyiapkan query update catatan.';
+                            }
+                        }
+                    } else {
+                        $errors[] = 'File ini bukan catatan teks yang bisa diedit.';
+                    }
+                } else {
+                    $errors[] = 'Catatan tidak ditemukan / bukan milik Anda.';
+                    $stmt->close();
+                }
+            } else {
+                $errors[] = 'Gagal menyiapkan query pencarian catatan.';
+            }
+        }
+
+    // 5) Hapus file
+    } elseif ($action === 'delete_file') {
+        $fileId = (int)($_POST['file_id'] ?? 0);
+        if ($fileId <= 0) {
+            $errors[] = 'File tidak ditemukan.';
+        } else {
+            $stmt = $db->prepare("
+                SELECT id, folder_id, stored_name
+                FROM study_files
+                WHERE id = ? AND user_id = ?
+                LIMIT 1
+            ");
+            if ($stmt) {
+                $stmt->bind_param("ii", $fileId, $userId);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                if ($res && $res->num_rows) {
+                    $row      = $res->fetch_assoc();
+                    $folderId = (int)$row['folder_id'];
+                    $stored   = $row['stored_name'];
+                    $stmt->close();
+
+                    $stmtD = $db->prepare("DELETE FROM study_files WHERE id = ? AND user_id = ? LIMIT 1");
+                    if ($stmtD) {
+                        $stmtD->bind_param("ii", $fileId, $userId);
+                        if ($stmtD->execute()) {
+                            $fs = $uploadBaseDir . '/' . $stored;
+                            if (is_file($fs)) {
+                                @unlink($fs);
+                            }
+                            header('Location: ' . $baseUrl . '/space_belajar/file_exploler.php?folder=' . $folderId);
+                            exit;
+                        } else {
+                            $errors[] = 'Gagal menghapus file dari database: ' . $stmtD->error;
+                        }
+                        $stmtD->close();
+                    } else {
+                        $errors[] = 'Gagal menyiapkan query hapus file.';
+                    }
+                } else {
+                    $errors[] = 'File tidak ditemukan / bukan milik Anda.';
+                    $stmt->close();
+                }
+            } else {
+                $errors[] = 'Gagal menyiapkan query pencarian file.';
+            }
+        }
+    }
+}
+
+// ----------------- DATA UNTUK LISTING ----------------- //
+
+// Breadcrumb (mirip path bar Windows)
+$breadcrumbs = [];
+$crumbId     = $currentFolderId;
+while ($crumbId > 0) {
+    $stmt = $db->prepare("
+        SELECT id, parent_id, name
+        FROM study_folders
+        WHERE id = ? AND user_id = ?
+        LIMIT 1
+    ");
+    if (!$stmt) break;
+    $stmt->bind_param("ii", $crumbId, $userId);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    if (!$res || !$res->num_rows) {
+        $stmt->close();
+        break;
+    }
+    $row = $res->fetch_assoc();
+    $stmt->close();
+    $breadcrumbs[] = $row;
+    $crumbId = (int)$row['parent_id'];
+}
+$breadcrumbs = array_reverse($breadcrumbs);
+
+// Sub folder
+$folders = [];
+$stmt = $db->prepare("
+    SELECT id, name, parent_id, created_at
+    FROM study_folders
+    WHERE user_id = ? AND parent_id = ?
+    ORDER BY name ASC
+");
+if ($stmt) {
+    $stmt->bind_param("ii", $userId, $currentFolderId);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    if ($res) {
+        $folders = $res->fetch_all(MYSQLI_ASSOC);
+    }
+    $stmt->close();
+}
+
+// Files (dengan search)
+$files = [];
+$sqlFiles = "
+    SELECT id, user_id, folder_id, title, original_name, stored_name, mime_type, size_bytes, description, created_at
+    FROM study_files
+    WHERE user_id = ?
+      AND (
+            (folder_id IS NULL AND ? = 0)
+            OR folder_id = ?
+          )
+";
+$params = [$userId, $currentFolderId, $currentFolderId];
+$types  = 'iii';
+
+if ($searchQuery !== '') {
+    $sqlFiles .= " AND (title LIKE ? OR original_name LIKE ? OR description LIKE ?)";
+    $like = '%' . $searchQuery . '%';
+    $params[] = $like;
+    $params[] = $like;
+    $params[] = $like;
+    $types   .= 'sss';
+}
+$sqlFiles .= " ORDER BY created_at DESC";
+
+$stmt = $db->prepare($sqlFiles);
+if ($stmt) {
+    $bind = [];
+    $bind[] = &$types;
+    foreach ($params as $k => $v) {
+        $params[$k] = $v;
+        $bind[] = &$params[$k];
+    }
+    call_user_func_array([$stmt, 'bind_param'], $bind);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    if ($res) {
+        $files = $res->fetch_all(MYSQLI_ASSOC);
+    }
+    $stmt->close();
+}
+
+$pageTitle = 'File Explorer Belajar';
+include __DIR__ . '/../inc/header.php';
+?>
+
+<style>
+/* Toolbar & path bar ala Explorer */
+.sb-toolbar {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:6px 10px;
+    border-radius:8px;
+    border:1px solid #e5e7eb;
+    background:#f9fafb;
+    margin-bottom:8px;
+    flex-wrap:wrap;
+}
+.sb-pathbar {
+    display:flex;
+    align-items:center;
+    gap:6px;
+    font-size:0.85rem;
+}
+.sb-path-item {
+    padding:3px 8px;
+    border-radius:999px;
+    background:#e5e7eb;
+}
+.sb-path-item a {
+    text-decoration:none;
+    color:#111827;
+}
+.sb-path-item.current {
+    background:#dbeafe;
+    font-weight:600;
+}
+
+/* Grid utama */
+.sb-grid {
+    display:grid;
+    grid-template-columns:minmax(0, 2.3fr) minmax(0, 1.4fr);
+    gap:14px;
+}
+@media (max-width:860px){
+    .sb-grid {
+        grid-template-columns:1fr;
+    }
+}
+
+.sb-subtext {
+    font-size:0.85rem;
+    color:#6b7280;
+}
+
+/* List ala Explorer: table */
+.sb-table {
+    width:100%;
+    border-collapse:collapse;
+    font-size:0.9rem;
+}
+.sb-table th {
+    text-align:left;
+    padding:6px 8px;
+    border-bottom:1px solid #e5e7eb;
+    font-weight:500;
+    background:#f9fafb;
+}
+.sb-table td {
+    padding:6px 8px;
+    border-bottom:1px solid #f3f4f6;
+    vertical-align:middle;
+}
+.sb-name-cell {
+    display:flex;
+    align-items:center;
+    gap:8px;
+}
+.sb-icon-folder, .sb-icon-file {
+    width:22px;
+    height:22px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    border-radius:4px;
+    font-size:1.1rem;
+}
+.sb-icon-folder {
+    background:#eff6ff;
+}
+.sb-icon-file {
+    background:#ecfdf5;
+}
+.sb-name-text a {
+    text-decoration:none;
+    color:#111827;
+}
+.sb-name-text a:hover {
+    text-decoration:underline;
+}
+.sb-type {
+    font-size:0.8rem;
+    color:#4b5563;
+}
+.sb-date, .sb-size {
+    font-size:0.8rem;
+    color:#6b7280;
+}
+
+.sb-actions {
+    display:flex;
+    gap:4px;
+    flex-wrap:wrap;
+}
+
+/* Panel Preview kanan */
+.sb-preview-box {
+    border-radius:10px;
+    border:1px solid #e5e7eb;
+    padding:10px 12px;
+    background:#f9fafb;
+}
+.sb-preview-title {
+    font-size:0.96rem;
+    font-weight:600;
+    margin-bottom:4px;
+}
+.sb-preview-meta {
+    font-size:0.8rem;
+    color:#6b7280;
+}
+.sb-preview-content {
+    margin-top:8px;
+    font-size:0.9rem;
+}
+.sb-preview-content pre {
+    white-space:pre-wrap;
+    font-family:Consolas, monospace;
+    font-size:0.85rem;
+}
+
+/* Dynamic island */
+.sb-dynamic-bar {
+    position:fixed;
+    left:50%;
+    transform:translateX(-50%);
+    bottom:16px;
+    z-index:50;
+    padding:6px 10px;
+    border-radius:999px;
+    background:rgba(17,24,39,0.96);
+    border:1px solid rgba(75,85,99,0.6);
+    box-shadow:0 10px 25px rgba(15,23,42,0.5);
+    max-width:420px;
+    width:100%;
+}
+.sb-dynamic-inner {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+}
+.sb-dynamic-label {
+    font-size:0.78rem;
+    color:#d1d5db;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+.sb-pill-buttons {
+    display:flex;
+    gap:4px;
+    flex-wrap:nowrap;
+}
+.sb-pill-btn {
+    border-radius:999px;
+    padding:5px 10px;
+    font-size:0.78rem;
+    border:1px solid rgba(156,163,175,0.7);
+    background:rgba(31,41,55,0.9);
+    color:#e5e7eb;
+    cursor:pointer;
+    white-space:nowrap;
+}
+.sb-pill-btn:hover {
+    background:#111827;
+    border-color:#e5e7eb;
+}
+
+/* Dialog */
+dialog {
+    max-width:480px;
+}
+</style>
+
+<div class="container" style="padding-bottom:80px;">
+
+    <div class="page-header" style="margin-bottom:8px;">
+        <h1 style="margin-bottom:2px;">File Explorer Belajar</h1>
+        <p class="sb-subtext">
+            Tampilan mirip File Explorer: simpan semua file dan catatan belajarmu di sini.
+        </p>
+    </div>
+
+    <!-- Toolbar atas -->
+    <div class="sb-toolbar">
+        <button type="button" class="btn btn-secondary"
+                onclick="window.history.back();"
+                style="padding:4px 8px;font-size:0.8rem;">
+            ⬅ Kembali
+        </button>
+        <button type="button" class="btn btn-secondary"
+                onclick="document.getElementById('modal-folder').showModal();"
+                style="padding:4px 10px;font-size:0.8rem;">
+            📁 Folder Baru
+        </button>
+        <button type="button" class="btn btn-secondary"
+                onclick="document.getElementById('modal-upload').showModal();"
+                style="padding:4px 10px;font-size:0.8rem;">
+            📄 Upload File
+        </button>
+        <button type="button" class="btn btn-secondary"
+                onclick="document.getElementById('modal-note').showModal();"
+                style="padding:4px 10px;font-size:0.8rem;">
+            📝 Catatan Baru
+        </button>
+
+        <div style="flex:1;"></div>
+
+        <!-- Search -->
+        <form method="get" action="<?php echo $baseUrl; ?>/space_belajar/file_exploler.php"
+              style="display:flex;gap:6px;align-items:center;">
+            <?php if ($currentFolderId > 0): ?>
+                <input type="hidden" name="folder" value="<?php echo (int)$currentFolderId; ?>">
+            <?php endif; ?>
+            <input type="text"
+                   name="q"
+                   placeholder="Cari file / catatan..."
+                   value="<?php echo sanitize($searchQuery); ?>"
+                   style="padding:5px 8px;font-size:0.8rem;border-radius:999px;border:1px solid #d1d5db;min-width:160px;">
+            <button type="submit" class="btn btn-secondary" style="padding:4px 9px;font-size:0.8rem;">Cari</button>
+        </form>
+    </div>
+
+    <!-- Path bar -->
+    <div class="sb-pathbar" style="margin-bottom:10px;">
+        <span style="font-size:0.8rem;color:#6b7280;">Lokasi:</span>
+        <span class="sb-path-item">
+            <a href="<?php echo $baseUrl; ?>/space_belajar/file_exploler.php">This PC</a>
+        </span>
+        <span class="sb-path-item">
+            <a href="<?php echo $baseUrl; ?>/space_belajar/file_exploler.php">Root</a>
+        </span>
+        <?php foreach ($breadcrumbs as $i => $bc): ?>
+            <span class="sb-path-item <?php echo $i === count($breadcrumbs)-1 ? 'current' : ''; ?>">
+                <a href="<?php echo $baseUrl; ?>/space_belajar/file_exploler.php?folder=<?php echo (int)$bc['id']; ?>">
+                    <?php echo sanitize($bc['name']); ?>
+                </a>
+            </span>
+        <?php endforeach; ?>
+    </div>
+
+    <!-- Pesan -->
+    <?php if (!empty($errors)): ?>
+        <div class="alert alert-error" style="margin-bottom:10px;">
+            <?php foreach ($errors as $e): ?>
+                <div><?php echo sanitize($e); ?></div>
+            <?php endforeach; ?>
+        </div>
+    <?php endif; ?>
+
+    <div class="sb-grid">
+
+        <!-- KIRI: List folder & file -->
+        <div class="card">
+
+            <table class="sb-table">
+                <thead>
+                <tr>
+                    <th>Nama</th>
+                    <th style="width:140px;">Tipe</th>
+                    <th style="width:150px;">Diubah</th>
+                    <th style="width:80px;">Ukuran</th>
+                    <th style="width:170px;">Aksi</th>
+                </tr>
+                </thead>
+                <tbody>
+
+                <!-- Folder -->
+                <?php foreach ($folders as $fo): ?>
+                    <tr>
+                        <td>
+                            <div class="sb-name-cell">
+                                <div class="sb-icon-folder">📁</div>
+                                <div class="sb-name-text">
+                                    <a href="<?php echo $baseUrl; ?>/space_belajar/file_exploler.php?folder=<?php echo (int)$fo['id']; ?>">
+                                        <?php echo sanitize($fo['name']); ?>
+                                    </a>
+                                </div>
+                            </div>
+                        </td>
+                        <td class="sb-type">Folder</td>
+                        <td class="sb-date"><?php echo sanitize($fo['created_at']); ?></td>
+                        <td class="sb-size">-</td>
+                        <td></td>
+                    </tr>
+                <?php endforeach; ?>
+
+                <!-- File -->
+                <?php if (empty($files) && empty($folders)): ?>
+                    <tr>
+                        <td colspan="5" class="sb-subtext" style="padding:10px 8px;">
+                            Folder ini masih kosong<?php echo $searchQuery ? ' (hasil pencarian juga kosong).' : '.'; ?>
+                        </td>
+                    </tr>
+                <?php else: ?>
+                    <?php foreach ($files as $f): ?>
+                        <?php
+                        $isNote = ($f['mime_type'] === 'text/plain');
+                        $isImg  = (strpos($f['mime_type'], 'image/') === 0);
+                        $sizeKB = $f['size_bytes'] > 0 ? round($f['size_bytes'] / 1024, 1) : 0;
+                        ?>
+                        <tr>
+                            <td>
+                                <div class="sb-name-cell">
+                                    <div class="sb-icon-file"><?php echo $isImg ? '🖼' : ($isNote ? '📝' : '📄'); ?></div>
+                                    <div class="sb-name-text">
+                                        <a href="<?php
+                                            echo $baseUrl . '/space_belajar/file_exploler.php?folder='
+                                                 . (int)$currentFolderId . '&view=' . (int)$f['id'];
+                                        ?>">
+                                            <?php echo sanitize($f['title'] ?: $f['original_name']); ?>
+                                        </a>
+                                    </div>
+                                </div>
+                            </td>
+                            <td class="sb-type">
+                                <?php if ($isNote): ?>
+                                    Catatan teks
+                                <?php elseif ($isImg): ?>
+                                    Gambar
+                                <?php else: ?>
+                                    File
+                                <?php endif; ?>
+                            </td>
+                            <td class="sb-date"><?php echo sanitize($f['created_at']); ?></td>
+                            <td class="sb-size">
+                                <?php echo $sizeKB > 0 ? $sizeKB . ' KB' : '-'; ?>
+                            </td>
+                            <td>
+                                <div class="sb-actions">
+                                    <!-- Open / Preview -->
+                                    <a href="<?php
+                                        echo $baseUrl . '/space_belajar/file_exploler.php?folder='
+                                            . (int)$currentFolderId . '&view=' . (int)$f['id'];
+                                    ?>" class="btn btn-secondary" style="padding:2px 8px;font-size:0.78rem;">
+                                        Buka
+                                    </a>
+
+                                    <!-- Edit (kalau note) -->
+                                    <?php if ($isNote): ?>
+                                        <a href="<?php
+                                            echo $baseUrl . '/space_belajar/file_exploler.php?folder='
+                                                . (int)$currentFolderId . '&edit=' . (int)$f['id'];
+                                        ?>" class="btn btn-secondary" style="padding:2px 8px;font-size:0.78rem;">
+                                            Edit
+                                        </a>
+                                    <?php endif; ?>
+
+                                    <!-- Download -->
+                                    <a class="btn btn-secondary"
+                                       style="padding:2px 8px;font-size:0.78rem;"
+                                       href="<?php echo $baseUrl . '/uploads/study_files/' . rawurlencode($f['stored_name']); ?>"
+                                       download="<?php echo sanitize($f['original_name'] ?: $f['stored_name']); ?>">
+                                        ⬇️
+                                    </a>
+
+                                    <!-- Delete -->
+                                    <form method="post"
+                                          onsubmit="return confirm('Yakin ingin menghapus file ini?');"
+                                          style="display:inline;">
+                                        <input type="hidden" name="action" value="delete_file">
+                                        <input type="hidden" name="file_id" value="<?php echo (int)$f['id']; ?>">
+                                        <button type="submit"
+                                                class="btn btn-outline"
+                                                style="padding:2px 8px;font-size:0.78rem;border-color:#fecaca;color:#b91c1c;">
+                                            🗑
+                                        </button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+
+                </tbody>
+            </table>
+        </div>
+
+        <!-- KANAN: Preview / Edit -->
+        <div class="card">
+            <h3 style="margin-top:0;margin-bottom:6px;font-size:1rem;">Preview & Catatan</h3>
+            <p class="sb-subtext" style="margin-bottom:10px;">
+                Pilih file dari list kiri untuk melihat isinya di sini. Catatan bisa diedit langsung.
+            </p>
+
+            <?php if ($editFile): ?>
+                <!-- Mode EDIT catatan -->
+                <div class="sb-preview-box" style="margin-bottom:10px;">
+                    <div class="sb-preview-title">
+                        Mengedit catatan: <?php echo sanitize($editFile['title'] ?: $editFile['original_name']); ?>
+                    </div>
+                    <div class="sb-preview-meta">
+                        Dibuat: <?php echo sanitize($editFile['created_at']); ?>
+                    </div>
+                </div>
+
+                <form method="post">
+                    <input type="hidden" name="action" value="update_note">
+                    <input type="hidden" name="file_id" value="<?php echo (int)$editFile['id']; ?>">
+
+                    <div class="form-group">
+                        <label for="note_title">Judul catatan</label>
+                        <input type="text" id="note_title" name="note_title"
+                               value="<?php echo sanitize($editFile['title'] ?: $editFile['original_name']); ?>"
+                               required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="note_content">Isi catatan</label>
+                        <textarea id="note_content" name="note_content" rows="10" required><?php
+                            echo htmlspecialchars($editContent, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                        ?></textarea>
+                    </div>
+
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button type="submit" class="btn btn-primary">💾 Simpan</button>
+                        <a href="<?php echo $baseUrl; ?>/space_belajar/file_exploler.php?folder=<?php echo (int)$currentFolderId; ?>&view=<?php echo (int)$editFile['id']; ?>"
+                           class="btn btn-outline">
+                            Batal
+                        </a>
+                    </div>
+                </form>
+
+            <?php elseif ($viewFile): ?>
+                <!-- Mode PREVIEW file -->
+                <div class="sb-preview-box">
+                    <div class="sb-preview-title">
+                        <?php echo sanitize($viewFile['title'] ?: $viewFile['original_name']); ?>
+                    </div>
+                    <div class="sb-preview-meta">
+                        Dibuat: <?php echo sanitize($viewFile['created_at']); ?><br>
+                        Nama file: <?php echo sanitize($viewFile['original_name']); ?><br>
+                        Tipe: <?php echo sanitize($viewFile['mime_type']); ?>
+                    </div>
+
+                    <div class="sb-preview-content">
+                        <?php if (strpos($viewFile['mime_type'], 'image/') === 0): ?>
+                            <div style="margin-top:8px;">
+                                <img src="<?php echo $baseUrl . '/uploads/study_files/' . rawurlencode($viewFile['stored_name']); ?>"
+                                     alt="Preview image"
+                                     style="max-width:100%;border-radius:8px;border:1px solid #e5e7eb;">
+                            </div>
+                        <?php elseif ($viewFile['mime_type'] === 'text/plain'): ?>
+                            <?php
+                            $content = '';
+                            $p = $uploadBaseDir . '/' . $viewFile['stored_name'];
+                            if (is_file($p) && is_readable($p)) {
+                                $content = (string)file_get_contents($p);
+                            }
+                            ?>
+                            <pre><?php echo htmlspecialchars($content, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></pre>
+                            <div style="margin-top:8px;">
+                                <a href="<?php echo $baseUrl; ?>/space_belajar/file_exploler.php?folder=<?php echo (int)$currentFolderId; ?>&edit=<?php echo (int)$viewFile['id']; ?>"
+                                   class="btn btn-secondary" style="font-size:0.85rem;">
+                                    ✏️ Edit catatan ini
+                                </a>
+                            </div>
+                        <?php else: ?>
+                            <p class="sb-subtext">
+                                Pratinjau belum didukung untuk tipe file ini.
+                                Silakan download untuk membukanya di aplikasi lain.
+                            </p>
+                        <?php endif; ?>
+
+                        <div style="margin-top:10px;">
+                            <a class="btn btn-primary"
+                               href="<?php echo $baseUrl . '/uploads/study_files/' . rawurlencode($viewFile['stored_name']); ?>"
+                               download="<?php echo sanitize($viewFile['original_name'] ?: $viewFile['stored_name']); ?>">
+                                ⬇️ Download
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+            <?php else: ?>
+                <div class="sb-preview-box">
+                    <div class="sb-preview-title">Tidak ada file yang dipilih</div>
+                    <p class="sb-subtext" style="margin-top:4px;">
+                        Klik nama file di tabel sebelah kiri untuk melihat isinya di sini.
+                        Untuk catatan teks, kamu juga bisa mengedit langsung dari panel ini.
+                    </p>
+                </div>
+            <?php endif; ?>
+        </div>
+    </div>
+</div>
+
+<!-- Modal - Folder -->
+<dialog id="modal-folder">
+    <form method="post" style="padding:10px 12px;">
+        <input type="hidden" name="action" value="create_folder">
+        <input type="hidden" name="parent_id" value="<?php echo (int)$currentFolderId; ?>">
+
+        <h3 style="margin-top:0;margin-bottom:6px;">Folder Baru</h3>
+        <p class="sb-subtext" style="margin-bottom:8px;">
+            Contoh nama: <strong>Matematika</strong>, <strong>Ujian Semester</strong>, dll.
+        </p>
+
+        <div class="form-group">
+            <label for="folder_name">Nama folder</label>
+            <input type="text" id="folder_name" name="folder_name" required>
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px;">
+            <button type="button" class="btn btn-outline" onclick="document.getElementById('modal-folder').close();">
+                Batal
+            </button>
+            <button type="submit" class="btn btn-primary">Simpan</button>
+        </div>
+    </form>
+</dialog>
+
+<!-- Modal - Upload File -->
+<dialog id="modal-upload">
+    <form method="post" enctype="multipart/form-data" style="padding:10px 12px;">
+        <input type="hidden" name="action" value="upload_file">
+        <input type="hidden" name="parent_id" value="<?php echo (int)$currentFolderId; ?>">
+
+        <h3 style="margin-top:0;margin-bottom:6px;">Upload File / Foto</h3>
+        <p class="sb-subtext" style="margin-bottom:8px;">
+            Pilih file dari perangkat (bisa foto papan tulis, dokumen PDF, dsb).
+            Di HP, tombol pilih file biasanya langsung menawarkan kamera.
+        </p>
+
+        <div class="form-group">
+            <label for="upload_file">Pilih file</label>
+            <input type="file" id="upload_file" name="upload_file" accept="*/*" required>
+        </div>
+
+        <div class="form-group">
+            <label for="file_title">Judul (opsional)</label>
+            <input type="text" id="file_title" name="file_title" placeholder="Contoh: Foto papan tulis matematika">
+        </div>
+
+        <div class="form-group">
+            <label for="file_desc">Catatan (opsional)</label>
+            <textarea id="file_desc" name="file_desc" rows="3"
+                      placeholder="Catatan singkat tentang file ini..."></textarea>
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px;">
+            <button type="button" class="btn btn-outline" onclick="document.getElementById('modal-upload').close();">
+                Batal
+            </button>
+            <button type="submit" class="btn btn-primary">Upload</button>
+        </div>
+    </form>
+</dialog>
+
+<!-- Modal - Catatan Baru -->
+<dialog id="modal-note">
+    <form method="post" style="padding:10px 12px;">
+        <input type="hidden" name="action" value="add_note">
+        <input type="hidden" name="parent_id" value="<?php echo (int)$currentFolderId; ?>">
+
+        <h3 style="margin-top:0;margin-bottom:6px;">Catatan Baru</h3>
+        <p class="sb-subtext" style="margin-bottom:8px;">
+            Tulis ringkasan pelajaran / poin penting di sini. Catatan disimpan sebagai file .txt.
+        </p>
+
+        <div class="form-group">
+            <label for="note_title">Judul catatan</label>
+            <input type="text" id="note_title" name="note_title" required
+                   placeholder="Contoh: Ringkasan Biologi Pertemuan 3">
+        </div>
+
+        <div class="form-group">
+            <label for="note_content">Isi catatan</label>
+            <textarea id="note_content" name="note_content" rows="8" required
+                      placeholder="Tulis isi pelajaran di sini..."></textarea>
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px;">
+            <button type="button" class="btn btn-outline" onclick="document.getElementById('modal-note').close();">
+                Batal
+            </button>
+            <button type="submit" class="btn btn-primary">Simpan Catatan</button>
+        </div>
+    </form>
+</dialog>
+
+<!-- Form Hidden untuk Kamera (langsung buka kamera, auto upload) -->
+<form id="cameraForm" method="post" enctype="multipart/form-data" style="display:none;">
+    <input type="hidden" name="action" value="upload_file">
+    <input type="hidden" name="parent_id" value="<?php echo (int)$currentFolderId; ?>">
+    <input type="file"
+           id="cameraInput"
+           name="upload_file"
+           accept="image/*"
+           capture="environment"
+           onchange="if(this.files.length){ document.getElementById('cameraForm').submit(); }">
+</form>
+
+<!-- Dynamic Island -->
+<div class="sb-dynamic-bar">
+    <div class="sb-dynamic-inner">
+        <div class="sb-dynamic-label">
+            Folder aktif:
+            <strong>
+                <?php
+                if (empty($breadcrumbs)) {
+                    echo 'Root';
+                } else {
+                    echo sanitize(end($breadcrumbs)['name']);
+                }
+                ?>
+            </strong>
+        </div>
+        <div class="sb-pill-buttons">
+            <button type="button" class="sb-pill-btn"
+                    onclick="document.getElementById('modal-folder').showModal();">
+                📁 Folder
+            </button>
+            <button type="button" class="sb-pill-btn"
+                    onclick="sbOpenCamera();">
+                📸 Kamera
+            </button>
+            <button type="button" class="sb-pill-btn"
+                    onclick="document.getElementById('modal-note').showModal();">
+                📝 Catatan
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+function sbOpenCamera() {
+    const input = document.getElementById('cameraInput');
+    if (input) {
+        input.click();
+    }
+}
+</script>
+
+<?php include __DIR__ . '/../inc/footer.php'; ?>

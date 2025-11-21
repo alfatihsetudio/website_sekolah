@@ -16,6 +16,17 @@ $isMurid  = ($role === 'murid' || $role === 'siswa');
 $assignments   = [];
 $submissionMap = [];
 
+/* ==============================
+   Tentukan URL dashboard sesuai role
+   ============================== */
+$dashboardUrl = $baseUrl . '/dashboard/murid.php'; // default murid
+
+if ($role === 'guru') {
+    $dashboardUrl = $baseUrl . '/dashboard/guru.php';
+} elseif ($role === 'admin') {
+    $dashboardUrl = $baseUrl . '/dashboard/admin.php';
+}
+
 // ----------------------
 // Jika school_id bermasalah
 // ----------------------
@@ -49,7 +60,6 @@ if ($schoolId <= 0) {
     } elseif ($isMurid) {
 
         // 1) Ambil semua tugas untuk kelas yang dimiliki murid
-        //    (baik dari class_user maupun dari users.class_id)
         $sql = "
             SELECT DISTINCT
                 a.id, a.judul, a.created_at, a.deadline,
@@ -90,9 +100,7 @@ if ($schoolId <= 0) {
             $assignmentIds = array_column($assignments, 'id');
             $assignmentIds = array_map('intval', $assignmentIds);
 
-            // kalau tidak ada id, lewati
             if (!empty($assignmentIds)) {
-                // aman karena semua sudah di-cast ke int
                 $inIds = implode(',', $assignmentIds);
 
                 $sqlSub = "
@@ -140,7 +148,7 @@ include __DIR__ . '/../inc/header.php';
 ?>
 
 <div class="container">
-    <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+    <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
         <div>
             <h1 style="margin-bottom:4px;">Daftar Tugas</h1>
             <p style="margin:0;font-size:0.9rem;color:#6b7280;">
@@ -149,11 +157,18 @@ include __DIR__ . '/../inc/header.php';
             </p>
         </div>
 
-        <?php if ($role === 'guru'): ?>
-            <a href="<?php echo $baseUrl; ?>/assignments/create.php" class="btn btn-primary">
-                + Buat Tugas
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:flex-end;">
+            <a href="<?php echo htmlspecialchars($dashboardUrl, ENT_QUOTES, 'UTF-8'); ?>"
+               class="btn btn-secondary">
+                ← Kembali ke Dashboard
             </a>
-        <?php endif; ?>
+
+            <?php if ($role === 'guru'): ?>
+                <a href="<?php echo $baseUrl; ?>/assignments/create.php" class="btn btn-primary">
+                    + Buat Tugas
+                </a>
+            <?php endif; ?>
+        </div>
     </div>
 
     <?php if ($schoolId <= 0): ?>
